@@ -92,11 +92,83 @@ def url_to_rgb_array(url: str) -> np.ndarray:
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     return rgb
 
+def add_enc_field_to_member_table():
+    """
+    Add 'enc' field to member table if it doesn't exist
+    """
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Check if enc field exists
+        cur.execute("""
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'member' AND COLUMN_NAME = 'enc'
+        """, (MYSQL_DATABASE,))
+        
+        if not cur.fetchone():
+            print("[DB] Adding 'enc' field to member table...")
+            cur.execute("ALTER TABLE member ADD COLUMN enc LONGBLOB NULL")
+            conn.commit()
+            print("[DB] 'enc' field added successfully")
+        else:
+            print("[DB] 'enc' field already exists")
+        
+        cur.close()
+        conn.close()
+    except Error as e:
+        print(f"[DB] Error adding enc field: {e}")
+
+def save_encoding_to_db(member_id: int, encoding: np.ndarray):
+    """
+    Save face encoding to member table
+    """
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Convert numpy array to binary
+        encoding_bytes = encoding.tobytes()
+        
+        cur.execute("UPDATE member SET enc = %s WHERE id = %s", (encoding_bytes, member_id))
+        conn.commit()
+        
+        cur.close()
+        conn.close()
+        print(f"[DB] Saved encoding for member_id={member_id}")
+    except Error as e:
+        print(f"[DB] Error saving encoding for member_id={member_id}: {e}")
+
+def load_encoding_from_db(member_id: int) -> np.ndarray:
+    """
+    Load face encoding from member table
+    """
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        cur.execute("SELECT enc FROM member WHERE id = %s", (member_id,))
+        result = cur.fetchone()
+        
+        cur.close()
+        conn.close()
+        
+        if result and result[0]:
+            return np.frombuffer(result[0], dtype=np.float64)
+        return None
+    except Error as e:
+        print(f"[DB] Error loading encoding for member_id={member_id}: {e}")
+        return None
+
 def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int]]:
     """
     Return (encodings, names, member_ids)
-    - 1 encoding per member (pakai face pertama yang terdeteksi di fotonya)
+    - Load from database first, generate if not exists
     """
+    # Ensure enc field exists
+    add_enc_field_to_member_table()
+    
     sources = fetch_member_images()
     encodings: List[np.ndarray] = []
     names: List[str] = []
@@ -106,22 +178,40 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int]]:
     print(f"[ENC] Mulai load {len(sources)} member image(s)")
     for member_id, first_name, full_url in sources:
         try:
-            img = url_to_rgb_array(full_url)
-            boxes = face_recognition.face_locations(img, model="hog")  # cepat; bisa 'cnn' jika ada GPU dlib yang siap
-            if not boxes:
-                print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
-                skipped.append((member_id, "no_face"))
-                continue
-            # Ambil wajah pertama
-            encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
-            if not encoding:
-                print(f"[ENC] Encoding gagal di member_id={member_id}")
-                skipped.append((member_id, "no_encoding"))
-                continue
-            encodings.append(encoding[0])
-            names.append(first_name.strip() or f"Member_{member_id}")
-            member_ids.append(member_id)
-            print(f"[ENC] OK member_id={member_id} name={names[-1]}")
+            # Try to load from database first
+            stored_encoding = load_encoding_from_db(member_id)
+            
+            if stored_encoding is not None:
+                # Use stored encoding
+                encodings.append(stored_encoding)
+                names.append(first_name.strip() or f"Member_{member_id}")
+                member_ids.append(member_id)
+                print(f"[ENC] Loaded from DB member_id={member_id} name={names[-1]}")
+            else:
+                # Generate new encoding from image
+                print(f"[ENC] Generating new encoding for member_id={member_id}")
+                img = url_to_rgb_array(full_url)
+                boxes = face_recognition.face_locations(img, model="hog")
+                if not boxes:
+                    print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
+                    skipped.append((member_id, "no_face"))
+                    continue
+                
+                # Ambil wajah pertama
+                encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
+                if not encoding:
+                    print(f"[ENC] Encoding gagal di member_id={member_id}")
+                    skipped.append((member_id, "no_encoding"))
+                    continue
+                
+                # Save to database
+                save_encoding_to_db(member_id, encoding[0])
+                
+                encodings.append(encoding[0])
+                names.append(first_name.strip() or f"Member_{member_id}")
+                member_ids.append(member_id)
+                print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
+                
         except Exception as e:
             print(f"[ENC] Error for member_id={member_id}: {e}")
             skipped.append((member_id, "error"))
@@ -194,7 +284,7 @@ INDEX_HTML = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Live Face Recognition (dlib)</title>
+  <title>Face Recognition FTL GYM</title>
   <style>
     :root {
       --bg-primary: #ffffff;
