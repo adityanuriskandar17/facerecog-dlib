@@ -33,8 +33,9 @@ REQUEST_TIMEOUT = 15
 # Gym API Configuration
 GYM_API_KEY = os.getenv("GYM_API_KEY", "")
 GYM_DOOR_ID = os.getenv("GYM_DOOR_ID", "19456")
-GYM_LOGIN_URL = "https://ftl.gymmasteronline.com/portal/api/v1/login"
-GYM_GATE_URL = "https://ftl.gymmasteronline.com/portal/api/v2/member/kiosk/checkin"
+GYM_LOGIN_URL = os.getenv("GYM_LOGIN_URL", "")
+GYM_GATE_URL = os.getenv("GYM_GATE_URL", "")
+
 
 # ===================== DB Helpers =====================
 def get_conn():
@@ -55,6 +56,7 @@ def fetch_member_images() -> List[Tuple[int, str, str]]:
     sql = """
     SELECT
         m.id AS member_id,
+        m.member_id AS gym_member_id,
         COALESCE(m.first_name, CONCAT('Member_', m.id)) AS first_name,
         CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url,
         f.created_at
@@ -65,22 +67,26 @@ def fetch_member_images() -> List[Tuple[int, str, str]]:
       AND (f.file_type_id IS NULL OR f.file_type_id = 1)
     ORDER BY m.id ASC, f.created_at DESC
     """
-    rows: List[Tuple[int, str, str, str]] = []
+    rows: List[Tuple[int, int, str, str, str]] = []
     try:
         conn = get_conn()
         cur = conn.cursor()
+        print(f"[DB] Executing SQL: {sql}")
         cur.execute(sql)
         rows = cur.fetchall()
+        print(f"[DB] Found {len(rows)} rows")
+        if rows:
+            print(f"[DB] First row: member_id={rows[0][0]}, gym_member_id={rows[0][1]}, first_name='{rows[0][2]}', url={rows[0][3][:50]}...")
         cur.close()
         conn.close()
     except Error as e:
         print(f"[DB] Error: {e}")
         return []
 
-    latest_per_member: "OrderedDict[int, Tuple[int,str,str]]" = OrderedDict()
-    for member_id, first_name, full_url, created_at in rows:
+    latest_per_member: "OrderedDict[int, Tuple[int,int,str,str]]" = OrderedDict()
+    for member_id, gym_member_id, first_name, full_url, created_at in rows:
         if member_id not in latest_per_member:
-            latest_per_member[member_id] = (member_id, first_name, full_url)
+            latest_per_member[member_id] = (member_id, gym_member_id, first_name, full_url)
     return list(latest_per_member.values())
 
 # ===================== Image / Encoding =====================
@@ -167,9 +173,9 @@ def load_encoding_from_db(member_id: int) -> np.ndarray:
         print(f"[DB] Error loading encoding for member_id={member_id}: {e}")
         return None
 
-def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int]]:
+def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dict[int, int]]:
     """
-    Return (encodings, names, member_ids)
+    Return (encodings, names, member_ids, gym_member_id_mapping)
     - Load from database first, generate if not exists
     """
     # Ensure enc field exists
@@ -179,10 +185,11 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int]]:
     encodings: List[np.ndarray] = []
     names: List[str] = []
     member_ids: List[int] = []
+    gym_member_id_mapping: Dict[int, int] = {}  # member_id -> gym_member_id
     skipped: List[Tuple[int, str]] = []
 
     print(f"[ENC] Mulai load {len(sources)} member image(s)")
-    for member_id, first_name, full_url in sources:
+    for member_id, gym_member_id, first_name, full_url in sources:
         try:
             # Try to load from database first
             stored_encoding = load_encoding_from_db(member_id)
@@ -192,7 +199,8 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int]]:
                 encodings.append(stored_encoding)
                 names.append(first_name.strip() or f"Member_{member_id}")
                 member_ids.append(member_id)
-                print(f"[ENC] Loaded from DB member_id={member_id} name={names[-1]}")
+                gym_member_id_mapping[member_id] = gym_member_id
+                print(f"[ENC] Loaded from DB member_id={member_id} gym_member_id={gym_member_id} name={names[-1]}")
             else:
                 # Generate new encoding from image
                 print(f"[ENC] Generating new encoding for member_id={member_id}")
@@ -216,14 +224,15 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int]]:
                 encodings.append(encoding[0])
                 names.append(first_name.strip() or f"Member_{member_id}")
                 member_ids.append(member_id)
-                print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
+                gym_member_id_mapping[member_id] = gym_member_id
+                print(f"[ENC] Generated & saved member_id={member_id} gym_member_id={gym_member_id} name={names[-1]}")
                 
         except Exception as e:
             print(f"[ENC] Error for member_id={member_id}: {e}")
             skipped.append((member_id, "error"))
 
     print(f"[ENC] Selesai. OK={len(encodings)} Skip={len(skipped)}")
-    return encodings, names, member_ids
+    return encodings, names, member_ids, gym_member_id_mapping
 
 # ===================== Gym API Integration =====================
 def gym_login(member_id: int) -> dict:
@@ -263,9 +272,10 @@ def gym_open_gate(token: str) -> dict:
     try:
         payload = {
             "api_key": GYM_API_KEY,
-            "door_id": GYM_DOOR_ID,
+            "doorid": GYM_DOOR_ID,
             "token": token
         }
+        
         
         response = requests.post(GYM_GATE_URL, json=payload, timeout=10)
         response.raise_for_status()
@@ -309,12 +319,13 @@ class Recognizer:
         self.known_encodings: List[np.ndarray] = []
         self.known_names: List[str] = []
         self.known_ids: List[int] = []
+        self.gym_member_id_mapping: Dict[int, int] = {}  # member_id -> gym_member_id
         self.lock = threading.Lock()
         self.last_reload = 0
 
     def reload(self):
         with self.lock:
-            self.known_encodings, self.known_names, self.known_ids = build_known_encodings()
+            self.known_encodings, self.known_names, self.known_ids, self.gym_member_id_mapping = build_known_encodings()
             self.last_reload = time.time()
 
     def recognize_frame(self, frame_bgr: np.ndarray) -> np.ndarray:
@@ -946,11 +957,16 @@ def recognize():
                 
                 # Process gym gate if member is recognized
                 if member_id and confidence <= TOLERANCE:
-                    gym_result = process_member_detection(member_id, name)
-                    if gym_result["success"]:
-                        print(f"[GYM] ✅ {gym_result['message']}")
+                    # Get gym_member_id for API call
+                    gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
+                    if gym_member_id:
+                        gym_result = process_member_detection(gym_member_id, name)
+                        if gym_result["success"]:
+                            print(f"[GYM] ✅ {gym_result['message']}")
+                        else:
+                            print(f"[GYM] ❌ {gym_result['error']}")
                     else:
-                        print(f"[GYM] ❌ {gym_result['error']}")
+                        print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
             
             faces.append({
                 "x": int(left),
@@ -991,4 +1007,4 @@ if __name__ == "__main__":
     recognizer.reload()
     # Jalankan Flask
     # Akses di: http://127.0.0.1:5000/
-    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
+    app.run(host="0.0.0.0", port=8001, debug=True, threaded=True)
