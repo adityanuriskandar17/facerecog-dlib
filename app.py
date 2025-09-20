@@ -189,41 +189,41 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
     for member_id, gym_member_id, first_name, full_url in sources:
         try:
             # Try to load from database first
-            stored_encoding = load_encoding_from_db(member_id)
+            # stored_encoding = load_encoding_from_db(member_id)
             
-            if stored_encoding is not None:
-                # Use stored encoding
-                encodings.append(stored_encoding)
-                names.append(first_name.strip() or f"Member_{member_id}")
-                member_ids.append(member_id)
-                gym_member_id_mapping[member_id] = gym_member_id
-                print(f"[ENC] Loaded from DB member_id={member_id} name={names[-1]}")
-            else:
-                # Generate new encoding from image
-                print(f"[ENC] Generating new encoding for member_id={member_id}")
-                img = url_to_rgb_array(full_url)
-                boxes = face_recognition.face_locations(img, model="hog")
+            # if stored_encoding is not None:
+            #     # Use stored encoding
+            #     encodings.append(stored_encoding)
+            #     names.append(first_name.strip() or f"Member_{member_id}")
+            #     member_ids.append(member_id)
+            #     gym_member_id_mapping[member_id] = gym_member_id
+            #     print(f"[ENC] Loaded from DB member_id={member_id} name={names[-1]}")
+            # else:
+            # Generate new encoding from image (always generate, skip DB loading)
+            print(f"[ENC] Generating new encoding for member_id={member_id}")
+            img = url_to_rgb_array(full_url)
+            boxes = face_recognition.face_locations(img, model="hog")
+            
+            if not boxes:
+                print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
+                skipped.append((member_id, "no_face"))
+                continue
                 
-                if not boxes:
-                    print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
-                    skipped.append((member_id, "no_face"))
-                    continue
-                    
-                # Ambil wajah pertama
-                encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
-                if not encoding:
-                    print(f"[ENC] Encoding gagal di member_id={member_id}")
-                    skipped.append((member_id, "no_encoding"))
-                    continue
-                    
-                # Save to database
-                save_encoding_to_db(member_id, encoding[0])
+            # Ambil wajah pertama
+            encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
+            if not encoding:
+                print(f"[ENC] Encoding gagal di member_id={member_id}")
+                skipped.append((member_id, "no_encoding"))
+                continue
                 
-                encodings.append(encoding[0])
-                names.append(first_name.strip() or f"Member_{member_id}")
-                member_ids.append(member_id)
-                gym_member_id_mapping[member_id] = gym_member_id
-                print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
+            # Save to database
+            # save_encoding_to_db(member_id, encoding[0])  # Commented: Don't save to DB for now
+            
+            encodings.append(encoding[0])
+            names.append(first_name.strip() or f"Member_{member_id}")
+            member_ids.append(member_id)
+            gym_member_id_mapping[member_id] = gym_member_id
+            print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
                 
         except Exception as e:
             print(f"[ENC] Error for member_id={member_id}: {e}")
