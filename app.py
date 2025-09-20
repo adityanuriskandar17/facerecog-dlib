@@ -897,8 +897,9 @@ INDEX_HTML = """
       </button>
       
       <div class="door-selector">
-        <label for="doorSelect">Door ID:</label>
+        <label for="doorSelect">Cabang:</label>
         <select id="doorSelect" onchange="updateDoorId()">
+          <option value="">Pilih Cabang</option>
           <option value="19456">FTL - Center / Door 1</option>
           <option value="19418">FTL - Center / Reception - CT</option>
           <option value="19429">FTL - Benhil / Reception - BH</option>
@@ -963,6 +964,12 @@ INDEX_HTML = """
       const doorSelect = document.getElementById('doorSelect');
       const selectedDoorId = doorSelect.value;
       
+      // If no door selected, don't send to server
+      if (!selectedDoorId) {
+        console.log('[DOOR] No door selected');
+        return;
+      }
+      
       // Send door ID to server
       fetch('/update_door_id', {
         method: 'POST',
@@ -975,7 +982,7 @@ INDEX_HTML = """
       .then(data => {
         if (data.success) {
           console.log(`[DOOR] Door ID updated to: ${selectedDoorId}`);
-          updateStatus(`Door ID updated to: ${selectedDoorId}`, 'success');
+          updateStatus(`Cabang dipilih: ${doorSelect.options[doorSelect.selectedIndex].text}`, 'success');
         } else {
           console.error('[DOOR] Failed to update door ID:', data.error);
           updateStatus(`Failed to update door ID: ${data.error}`, 'error');
@@ -1090,6 +1097,12 @@ INDEX_HTML = """
         document.body.setAttribute('data-theme', 'dark');
         themeIcon.textContent = '☀️';
       }
+      
+      // Reset door selection to default on page load
+      const doorSelect = document.getElementById('doorSelect');
+      if (doorSelect) {
+        doorSelect.value = '';
+      }
     });
 
     // Face recognition functionality
@@ -1113,6 +1126,14 @@ INDEX_HTML = """
     }
 
     async function startCamera() {
+      // Check if door ID is selected
+      const doorSelect = document.getElementById('doorSelect');
+      if (!doorSelect.value) {
+        alert('Pilih Cabang terlebih dahulu!');
+        updateStatus('Silakan pilih cabang sebelum memulai kamera', 'error');
+        return;
+      }
+      
       try {
         updateStatus('Requesting camera access...', 'info');
         stream = await navigator.mediaDevices.getUserMedia({ 
