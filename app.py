@@ -964,73 +964,88 @@ def recognize():
         if not boxes:
             return {"success": True, "faces": [], "debug": "No faces detected"}
         
-        encs = face_recognition.face_encodings(rgb, boxes)
+        # Sort faces by size (largest first) and take only the first one
+        face_sizes = [(i, (box[2] - box[0]) * (box[3] - box[1])) for i, box in enumerate(boxes)]
+        face_sizes.sort(key=lambda x: x[1], reverse=True)  # Sort by area, largest first
+        
+        # Take only the largest face (most front)
+        largest_face_idx = face_sizes[0][0]
+        largest_box = boxes[largest_face_idx]
+        
+        # Generate encoding only for the largest face
+        encs = face_recognition.face_encodings(rgb, [largest_box])
+        
+        if not encs:
+            return {"success": True, "faces": [], "debug": "No face encoding generated"}
         
         faces = []
-        for i, ((top, right, bottom, left), enc) in enumerate(zip(boxes, encs)):
-            distances = face_recognition.face_distance(known_encs, enc)
-            if len(distances) == 0:
-                name = "Unknown"
-                confidence = 1.0
-                member_id = None
+        # Process only the largest face
+        (top, right, bottom, left) = largest_box
+        enc = encs[0]  # Only one encoding for the largest face
+        
+        distances = face_recognition.face_distance(known_encs, enc)
+        if len(distances) == 0:
+            name = "Unknown"
+            confidence = 1.0
+            member_id = None
+        else:
+            idx = int(np.argmin(distances))
+            confidence = float(distances[idx])
+            name = known_names[idx] if confidence <= TOLERANCE else "Unknown"
+            member_id = known_ids[idx] if confidence <= TOLERANCE else None
+        
+        # Process gym gate if member is recognized
+        if member_id and confidence <= TOLERANCE:
+            # Check cooldown first
+            if recognizer.is_in_cooldown():
+                cooldown_remaining = recognizer.get_cooldown_remaining()
+                print(f"[GYM] ⏳ Cooldown active: {cooldown_remaining:.1f}s remaining")
+                # Add cooldown info to face data
+                faces.append({
+                    "x": int(left),
+                    "y": int(top),
+                    "width": int(right - left),
+                    "height": int(bottom - top),
+                    "name": f"Cooldown: {cooldown_remaining:.1f}s",
+                    "confidence": confidence,
+                    "cooldown": True,
+                    "cooldown_remaining": cooldown_remaining
+                })
             else:
-                idx = int(np.argmin(distances))
-                confidence = float(distances[idx])
-                name = known_names[idx] if confidence <= TOLERANCE else "Unknown"
-                member_id = known_ids[idx] if confidence <= TOLERANCE else None
-                
-                # Process gym gate if member is recognized
-                if member_id and confidence <= TOLERANCE:
-                    # Check cooldown first
-                    if recognizer.is_in_cooldown():
-                        cooldown_remaining = recognizer.get_cooldown_remaining()
-                        print(f"[GYM] ⏳ Cooldown active: {cooldown_remaining:.1f}s remaining")
-                        # Add cooldown info to face data
-                        faces.append({
-                            "x": int(left),
-                            "y": int(top),
-                            "width": int(right - left),
-                            "height": int(bottom - top),
-                            "name": f"Cooldown: {cooldown_remaining:.1f}s",
-                            "confidence": confidence,
-                            "cooldown": True,
-                            "cooldown_remaining": cooldown_remaining
-                        })
+                # Get gym_member_id for API call
+                gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
+                if gym_member_id:
+                    gym_result = process_member_detection(gym_member_id, name)
+                    if gym_result["success"]:
+                        print(f"[GYM] ✅ {gym_result['message']}")
+                        # Mark successful login to start cooldown
+                        recognizer.set_successful_login()
                     else:
-                        # Get gym_member_id for API call
-                        gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
-                        if gym_member_id:
-                            gym_result = process_member_detection(gym_member_id, name)
-                            if gym_result["success"]:
-                                print(f"[GYM] ✅ {gym_result['message']}")
-                                # Mark successful login to start cooldown
-                                recognizer.set_successful_login()
-                            else:
-                                print(f"[GYM] ❌ {gym_result['error']}")
-                        else:
-                            print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
-                        
-                        # Add normal face data (not in cooldown)
-                        faces.append({
-                            "x": int(left),
-                            "y": int(top),
-                            "width": int(right - left),
-                            "height": int(bottom - top),
-                            "name": name,
-                            "confidence": confidence,
-                            "member_id": member_id
-                        })
+                        print(f"[GYM] ❌ {gym_result['error']}")
                 else:
-                    # Add face data for unrecognized faces
-                    faces.append({
-                        "x": int(left),
-                        "y": int(top),
-                        "width": int(right - left),
-                        "height": int(bottom - top),
-                        "name": name,
-                        "confidence": confidence,
-                        "member_id": member_id
-                    })
+                    print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
+                
+                # Add normal face data (not in cooldown)
+                faces.append({
+                    "x": int(left),
+                    "y": int(top),
+                    "width": int(right - left),
+                    "height": int(bottom - top),
+                    "name": name,
+                    "confidence": confidence,
+                    "member_id": member_id
+                })
+        else:
+            # Add face data for unrecognized faces
+            faces.append({
+                "x": int(left),
+                "y": int(top),
+                "width": int(right - left),
+                "height": int(bottom - top),
+                "name": name,
+                "confidence": confidence,
+                "member_id": member_id
+            })
         
         return {"success": True, "faces": faces, "debug": f"Processed {len(faces)} faces"}
         
