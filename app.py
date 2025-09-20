@@ -554,7 +554,8 @@ INDEX_HTML = """
       background: #000;
       width: 100%;
       max-width: 960px;
-      aspect-ratio: 16/9;
+      aspect-ratio: 4/3;
+      min-height: 400px;
     }
     
     .banner {
@@ -822,6 +823,9 @@ INDEX_HTML = """
       width: 100%;
       height: 100%;
       object-fit: cover;
+      position: absolute;
+      top: 0;
+      left: 0;
     }
     
     #canvas {
@@ -1440,6 +1444,9 @@ INDEX_HTML = """
       const containerHeight = container.clientHeight;
       const aspectRatio = video.videoWidth / video.videoHeight;
       
+      console.log('[RESIZE] Container:', containerWidth, 'x', containerHeight);
+      console.log('[RESIZE] Video:', video.videoWidth, 'x', video.videoHeight, 'aspect:', aspectRatio);
+      
       // For fullscreen mode, use viewport dimensions
       if (container.classList.contains('fullscreen-mode') || document.fullscreenElement) {
         canvas.width = window.innerWidth;
@@ -1449,22 +1456,15 @@ INDEX_HTML = """
         return;
       }
       
-      // For normal mode, fit within container
-      let canvasWidth = containerWidth;
-      let canvasHeight = containerWidth / aspectRatio;
+      // For normal mode, fill the entire container
+      canvas.width = containerWidth;
+      canvas.height = containerHeight;
       
-      // If height exceeds container, scale down
-      if (canvasHeight > containerHeight) {
-        canvasHeight = containerHeight;
-        canvasWidth = containerHeight * aspectRatio;
-      }
+      // Update CSS size to fill container
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
       
-      canvas.width = canvasWidth;
-      canvas.height = canvasHeight;
-      
-      // Update CSS size to match canvas dimensions
-      canvas.style.width = canvasWidth + 'px';
-      canvas.style.height = canvasHeight + 'px';
+      console.log('[RESIZE] Canvas set to:', canvas.width, 'x', canvas.height);
     }
 
     function drawDisplay() {
@@ -1500,13 +1500,42 @@ INDEX_HTML = """
       
       // Draw video frame
       try {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // Debug video state
+        console.log('[DRAW] Video state:', {
+          videoWidth: video.videoWidth,
+          videoHeight: video.videoHeight,
+          canvasWidth: canvas.width,
+          canvasHeight: canvas.height,
+          readyState: video.readyState,
+          paused: video.paused,
+          ended: video.ended
+        });
+        
+        // Ensure video is ready before drawing
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          // Try different drawing methods for better compatibility
+          try {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            console.log('[DRAW] Video frame drawn successfully');
+          } catch (drawError) {
+            console.error('[DRAW] drawImage failed:', drawError);
+            // Fallback: try with source dimensions
+            ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, canvas.width, canvas.height);
+            console.log('[DRAW] Video frame drawn with fallback method');
+          }
+        } else {
+          console.log('[DRAW] Video not ready, skipping draw');
+          ctx.fillStyle = '#ff0000';
+          ctx.font = '16px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('Video not ready', canvas.width / 2, canvas.height / 2);
+        }
       } catch (e) {
         console.error('[DRAW] Error drawing video:', e);
         ctx.fillStyle = '#ff0000';
         ctx.font = '16px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText('Video drawing error', canvas.width / 2, canvas.height / 2);
+        ctx.fillText('Video drawing error: ' + e.message, canvas.width / 2, canvas.height / 2);
       }
       
       const now = Date.now();
