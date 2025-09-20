@@ -575,6 +575,62 @@ INDEX_HTML = """
       display: none;
     }
     
+    .cooldown-display {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      background: linear-gradient(135deg, #ff6b35, #f7931e);
+      color: white;
+      padding: 12px 20px;
+      border-radius: 12px;
+      box-shadow: 0 8px 25px rgba(255, 107, 53, 0.3);
+      z-index: 10;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    
+    .cooldown-display.hidden {
+      display: none;
+    }
+    
+    .cooldown-content {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    .cooldown-icon {
+      font-size: 24px;
+      animation: spin 1s linear infinite;
+    }
+    
+    .cooldown-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    
+    .cooldown-title {
+      font-size: 14px;
+      font-weight: 600;
+      opacity: 0.9;
+    }
+    
+    .cooldown-time {
+      font-size: 18px;
+      font-weight: 700;
+      font-family: 'Courier New', monospace;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+    
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    
     .banner-content {
       display: flex;
       align-items: center;
@@ -934,6 +990,15 @@ INDEX_HTML = """
             </div>
           </div>
         </div>
+        <div id="cooldown-display" class="cooldown-display hidden">
+          <div class="cooldown-content">
+            <div class="cooldown-icon">⏳</div>
+            <div class="cooldown-text">
+              <div class="cooldown-title">Cooldown</div>
+              <div class="cooldown-time"><span id="cooldown-time">0.0</span>s</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     
@@ -1217,6 +1282,7 @@ INDEX_HTML = """
           if (data.success) {
             updateFaces(data.faces, scale);
             updateBanner(data.banner);
+            updateCooldownDisplay(data.cooldown);
           } else {
             console.error('Recognition failed:', data.error);
           }
@@ -1267,6 +1333,21 @@ INDEX_HTML = """
         }, 2000);
       } else {
         banner.classList.add('hidden');
+      }
+    }
+
+    function updateCooldownDisplay(cooldownInfo) {
+      const cooldownDisplay = document.getElementById('cooldown-display');
+      const cooldownTime = document.getElementById('cooldown-time');
+      
+      console.log('[COOLDOWN] Received cooldown info:', cooldownInfo);
+      
+      if (cooldownInfo && cooldownInfo.show) {
+        console.log('[COOLDOWN] Showing cooldown for:', cooldownInfo.remaining);
+        cooldownTime.textContent = cooldownInfo.remaining.toFixed(1);
+        cooldownDisplay.classList.remove('hidden');
+      } else {
+        cooldownDisplay.classList.add('hidden');
       }
     }
 
@@ -1384,7 +1465,8 @@ INDEX_HTML = """
         
         // Display different text based on state
         if (cooldown) {
-          ctx.fillText(`⏳ Cooldown: ${cooldown_remaining.toFixed(1)}s`, dx + 5, dy + dh - 8);
+          // Don't show cooldown in bounding box, it will be shown on screen
+          ctx.fillText(`${name} (${confidence.toFixed(2)})`, dx + 5, dy + dh - 8);
         } else {
           ctx.fillText(`${name} (${confidence.toFixed(2)})`, dx + 5, dy + dh - 8);
         }
@@ -1499,17 +1581,7 @@ def recognize():
             if recognizer.is_in_cooldown():
                 cooldown_remaining = recognizer.get_cooldown_remaining()
                 print(f"[GYM] ⏳ Cooldown active: {cooldown_remaining:.1f}s remaining")
-                # Add cooldown info to face data
-                faces.append({
-                    "x": int(left),
-                    "y": int(top),
-                    "width": int(right - left),
-                    "height": int(bottom - top),
-                    "name": f"Cooldown: {cooldown_remaining:.1f}s",
-                    "confidence": confidence,
-                    "cooldown": True,
-                    "cooldown_remaining": cooldown_remaining
-                })
+                # Don't add cooldown to face data, it will be shown on screen
             else:
                 # Get gym_member_id for API call
                 gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
@@ -1559,10 +1631,21 @@ def recognize():
                 }
                 print(f"[BANNER] Showing banner for {recognizer.last_successful_member} ({time_since_login:.1f}s ago)")
         
+        # Add cooldown info if system is in cooldown
+        cooldown_info = None
+        if recognizer.is_in_cooldown():
+            cooldown_remaining = recognizer.get_cooldown_remaining()
+            cooldown_info = {
+                "show": True,
+                "remaining": cooldown_remaining
+            }
+            print(f"[COOLDOWN] Showing cooldown: {cooldown_remaining:.1f}s remaining")
+        
         return {
             "success": True, 
             "faces": faces, 
             "banner": banner_info,
+            "cooldown": cooldown_info,
             "debug": f"Processed {len(faces)} faces"
         }
         
