@@ -202,26 +202,26 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
                 print(f"[ENC] Generating new encoding for member_id={member_id}")
                 img = url_to_rgb_array(full_url)
                 boxes = face_recognition.face_locations(img, model="hog")
-                if not boxes:
-                    print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
-                    skipped.append((member_id, "no_face"))
-                    continue
+            if not boxes:
+                print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
+                skipped.append((member_id, "no_face"))
+                continue
                 
-                # Ambil wajah pertama
-                encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
-                if not encoding:
-                    print(f"[ENC] Encoding gagal di member_id={member_id}")
-                    skipped.append((member_id, "no_encoding"))
-                    continue
+            # Ambil wajah pertama
+            encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
+            if not encoding:
+                print(f"[ENC] Encoding gagal di member_id={member_id}")
+                skipped.append((member_id, "no_encoding"))
+                continue
                 
                 # Save to database
                 save_encoding_to_db(member_id, encoding[0])
                 
-                encodings.append(encoding[0])
-                names.append(first_name.strip() or f"Member_{member_id}")
-                member_ids.append(member_id)
-                gym_member_id_mapping[member_id] = gym_member_id
-                print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
+            encodings.append(encoding[0])
+            names.append(first_name.strip() or f"Member_{member_id}")
+            member_ids.append(member_id)
+            gym_member_id_mapping[member_id] = gym_member_id
+            print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
                 
         except Exception as e:
             print(f"[ENC] Error for member_id={member_id}: {e}")
@@ -550,6 +550,9 @@ INDEX_HTML = """
       overflow: hidden;
       box-shadow: var(--shadow-lg);
       background: #000;
+      width: 100%;
+      max-width: 960px;
+      aspect-ratio: 16/9;
     }
     
     .banner {
@@ -607,20 +610,167 @@ INDEX_HTML = """
       }
     }
     
+    /* Fullscreen styles */
+    .camera-container:fullscreen {
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100vw;
+      height: 100vh;
+    }
+    
+    .camera-container:fullscreen .camera-wrapper {
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      max-height: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .camera-container:fullscreen #video,
+    .camera-container:fullscreen #canvas {
+      width: 100vw !important;
+      height: 100vh !important;
+      object-fit: cover;
+      max-width: none;
+      max-height: none;
+    }
+    
+    .camera-container:fullscreen .banner {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10000;
+    }
+    
+    /* Fallback CSS fullscreen */
+    .fullscreen-mode {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: #000;
+      z-index: 9999;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .fullscreen-mode .camera-container {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .fullscreen-mode .camera-wrapper {
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      max-height: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .fullscreen-mode #video,
+    .fullscreen-mode #canvas {
+      width: 100vw !important;
+      height: 100vh !important;
+      object-fit: cover;
+      max-width: none;
+      max-height: none;
+    }
+    
+    .fullscreen-mode .controls,
+    .fullscreen-mode .header,
+    .fullscreen-mode #status {
+      display: none;
+    }
+    
+    .fullscreen-mode .banner {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10000;
+    }
+    
+    .fullscreen-exit {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 10001;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 20px;
+      font-size: 14px;
+      cursor: pointer;
+      display: none;
+    }
+    
+    .fullscreen-mode .fullscreen-exit {
+      display: block;
+    }
+    
+    /* Webkit fullscreen support */
+    .camera-container:-webkit-full-screen {
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100vw;
+      height: 100vh;
+    }
+    
+    .camera-container:-webkit-full-screen .camera-wrapper {
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      max-height: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .camera-container:-webkit-full-screen #video,
+    .camera-container:-webkit-full-screen #canvas {
+      width: 100vw !important;
+      height: 100vh !important;
+      object-fit: cover;
+      max-width: none;
+      max-height: none;
+    }
+    
+    .camera-container:-webkit-full-screen .banner {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10000;
+    }
+    
     #video {
       display: none;
       width: 100%;
-      height: auto;
-      max-width: 960px;
-      aspect-ratio: 4/3;
+      height: 100%;
+      object-fit: cover;
     }
     
     #canvas {
       display: block;
       width: 100%;
-      height: auto;
-      max-width: 960px;
-      aspect-ratio: 4/3;
+      height: 100%;
+      object-fit: cover;
     }
     
     .info-panel {
@@ -680,8 +830,54 @@ INDEX_HTML = """
     @media (max-width: 1024px) {
       .container { padding: 15px; }
       .header h1 { font-size: 2rem; }
-      #video, #canvas { max-width: 100%; }
+      .camera-wrapper { 
+        max-width: 100%;
+        aspect-ratio: 4/3;
+      }
       .controls { flex-direction: column; gap: 8px; }
+    }
+    
+    @media (max-width: 768px) {
+      .container { padding: 10px; }
+      .header h1 { font-size: 1.5rem; }
+      .camera-wrapper { 
+        max-width: 100%;
+        aspect-ratio: 4/3;
+        border-radius: 12px;
+      }
+      .controls { 
+        flex-direction: column; 
+        gap: 8px; 
+        margin-bottom: 15px;
+      }
+      .door-selector {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+      }
+      .door-selector select {
+        min-width: 100%;
+      }
+    }
+    
+    @media (max-width: 480px) {
+      .container { padding: 5px; }
+      .header h1 { font-size: 1.2rem; }
+      .camera-wrapper { 
+        aspect-ratio: 3/4;
+        border-radius: 8px;
+      }
+      .banner {
+        top: 10px;
+        padding: 10px 15px;
+        font-size: 14px;
+      }
+      .banner-title {
+        font-size: 16px;
+      }
+      .banner-name {
+        font-size: 12px;
+      }
     }
   </style>
 </head>
@@ -690,7 +886,7 @@ INDEX_HTML = """
     <div class="header">
       <h1>Face Recognition FTL GYM</h1>
       <p style="color: var(--text-secondary); margin: 0;">Powered by Dlib & face_recognition</p>
-    </div>
+  </div>
     
     <div class="controls">
       <button class="btn btn-primary" onclick="startCamera()">
@@ -703,12 +899,17 @@ INDEX_HTML = """
       <div class="door-selector">
         <label for="doorSelect">Door ID:</label>
         <select id="doorSelect" onchange="updateDoorId()">
-          <option value="19418">FTL - Center / Reception - CT</option>
           <option value="19456">FTL - Center / Door 1</option>
+          <option value="19418">FTL - Center / Reception - CT</option>
           <option value="19429">FTL - Benhil / Reception - BH</option>
           <option value="4">FTL - Tebet / Reception - TB</option>
         </select>
       </div>
+      
+      <button class="btn btn-secondary" onclick="toggleFullscreen()" title="Toggle Fullscreen">
+        <span id="fullscreen-icon">⛶</span>
+        <span id="fullscreen-text">Fullscreen</span>
+      </button>
       
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark Mode">
         <span id="theme-icon">🌙</span>
@@ -732,6 +933,10 @@ INDEX_HTML = """
         </div>
       </div>
     </div>
+    
+    <button class="fullscreen-exit" onclick="exitFullscreen()">
+      <span>✕</span> Exit Fullscreen
+    </button>
     
   </div>
 
@@ -781,6 +986,100 @@ INDEX_HTML = """
         updateStatus(`Error updating door ID: ${error}`, 'error');
       });
     }
+    
+    // Fullscreen functionality
+    function toggleFullscreen() {
+      if (document.fullscreenElement) {
+        exitFullscreen();
+      } else {
+        enterFullscreen();
+      }
+    }
+    
+    function enterFullscreen() {
+      const cameraContainer = document.querySelector('.camera-container');
+      const fullscreenIcon = document.getElementById('fullscreen-icon');
+      const fullscreenText = document.getElementById('fullscreen-text');
+      
+      if (cameraContainer.requestFullscreen) {
+        cameraContainer.requestFullscreen().then(() => {
+          cameraContainer.classList.add('fullscreen-mode');
+          fullscreenIcon.textContent = '⛶';
+          fullscreenText.textContent = 'Exit';
+          resizeCanvas();
+        }).catch(err => {
+          console.error('Error entering fullscreen:', err);
+          // Fallback to CSS fullscreen
+          document.querySelector('.container').classList.add('fullscreen-mode');
+          fullscreenIcon.textContent = '⛶';
+          fullscreenText.textContent = 'Exit';
+          resizeCanvas();
+        });
+      } else {
+        // Fallback for browsers that don't support Fullscreen API
+        document.querySelector('.container').classList.add('fullscreen-mode');
+        fullscreenIcon.textContent = '⛶';
+        fullscreenText.textContent = 'Exit';
+        resizeCanvas();
+      }
+    }
+    
+    function exitFullscreen() {
+      const fullscreenIcon = document.getElementById('fullscreen-icon');
+      const fullscreenText = document.getElementById('fullscreen-text');
+      
+      if (document.fullscreenElement) {
+        document.exitFullscreen().then(() => {
+          document.querySelector('.camera-container').classList.remove('fullscreen-mode');
+          fullscreenIcon.textContent = '⛶';
+          fullscreenText.textContent = 'Fullscreen';
+          resizeCanvas();
+        }).catch(err => {
+          console.error('Error exiting fullscreen:', err);
+        });
+      } else {
+        // Fallback for CSS fullscreen
+        document.querySelector('.container').classList.remove('fullscreen-mode');
+        fullscreenIcon.textContent = '⛶';
+        fullscreenText.textContent = 'Fullscreen';
+        resizeCanvas();
+      }
+    }
+    
+    // Handle ESC key to exit fullscreen
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && document.fullscreenElement) {
+        exitFullscreen();
+      }
+    });
+    
+    // Handle fullscreen change events
+    document.addEventListener('fullscreenchange', function() {
+      const cameraContainer = document.querySelector('.camera-container');
+      const fullscreenIcon = document.getElementById('fullscreen-icon');
+      const fullscreenText = document.getElementById('fullscreen-text');
+      
+      if (document.fullscreenElement) {
+        cameraContainer.classList.add('fullscreen-mode');
+        fullscreenIcon.textContent = '⛶';
+        fullscreenText.textContent = 'Exit';
+      } else {
+        cameraContainer.classList.remove('fullscreen-mode');
+        fullscreenIcon.textContent = '⛶';
+        fullscreenText.textContent = 'Fullscreen';
+      }
+      resizeCanvas();
+    });
+    
+    // Handle window resize for responsiveness
+    window.addEventListener('resize', function() {
+      resizeCanvas();
+    });
+    
+    // Handle orientation change on mobile
+    window.addEventListener('orientationchange', function() {
+      setTimeout(resizeCanvas, 100);
+    });
     
     // Load saved theme on page load
     document.addEventListener('DOMContentLoaded', function() {
@@ -991,16 +1290,36 @@ INDEX_HTML = """
     function resizeCanvas() {
       if (!video.videoWidth || !video.videoHeight) return;
       
-      const containerWidth = canvas.parentElement.clientWidth;
-      const maxWidth = Math.min(960, containerWidth);
+      const container = canvas.parentElement;
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
       const aspectRatio = video.videoWidth / video.videoHeight;
       
-      canvas.width = maxWidth;
-      canvas.height = maxWidth / aspectRatio;
+      // For fullscreen mode, use viewport dimensions
+      if (container.classList.contains('fullscreen-mode') || document.fullscreenElement) {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        canvas.style.width = '100vw';
+        canvas.style.height = '100vh';
+        return;
+      }
+      
+      // For normal mode, fit within container
+      let canvasWidth = containerWidth;
+      let canvasHeight = containerWidth / aspectRatio;
+      
+      // If height exceeds container, scale down
+      if (canvasHeight > containerHeight) {
+        canvasHeight = containerHeight;
+        canvasWidth = containerHeight * aspectRatio;
+      }
+      
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
       
       // Update CSS size to match canvas dimensions
-      canvas.style.width = maxWidth + 'px';
-      canvas.style.height = (maxWidth / aspectRatio) + 'px';
+      canvas.style.width = canvasWidth + 'px';
+      canvas.style.height = canvasHeight + 'px';
     }
 
     function drawDisplay() {
