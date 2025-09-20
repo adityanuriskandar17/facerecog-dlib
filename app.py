@@ -25,7 +25,7 @@ MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "deepface")
 MYSQL_USER = os.getenv("MYSQL_USER", "root")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
 
-TOLERANCE = float(os.getenv("TOLERANCE", "0.45"))  # lebih ketat dari default 0.6
+TOLERANCE = 0.45  # lebih ketat dari default 0.6
 
 # Jika ingin batasi request gambar (detik)
 REQUEST_TIMEOUT = 15
@@ -196,34 +196,291 @@ INDEX_HTML = """
   <meta charset="utf-8">
   <title>Live Face Recognition (dlib)</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
-    .row { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
-    button, a.btn { padding: 10px 14px; border-radius: 10px; border: 1px solid #ddd; background:#f7f7f7; text-decoration:none; color:#333; cursor: pointer; }
-    button:hover, a.btn:hover { background: #e7e7e7; }
-    #video { border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,0.08); width: 960px; height: 720px; background: #000; display: none; }
-    #canvas { display: block; border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,0.08); }
-    code { background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
-    .status { margin: 10px 0; padding: 10px; border-radius: 6px; }
-    .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-    .status.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-    .status.info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+    :root {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f8f9fa;
+      --text-primary: #212529;
+      --text-secondary: #6c757d;
+      --border-color: #dee2e6;
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    }
+    
+    [data-theme="dark"] {
+      --bg-primary: #1a1a1a;
+      --bg-secondary: #2d2d2d;
+      --text-primary: #ffffff;
+      --text-secondary: #a0a0a0;
+      --border-color: #404040;
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+    }
+    
+    * { box-sizing: border-box; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      transition: background-color 0.3s ease, color 0.3s ease;
+      min-height: 100vh;
+    }
+    
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    
+    .header h1 {
+      margin: 0 0 10px 0;
+      font-size: 2.5rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    .controls {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    
+    .btn {
+      padding: 12px 20px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-lg);
+    }
+    
+    .btn-secondary {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
+    }
+    
+    .btn-secondary:hover {
+      background: var(--border-color);
+    }
+    
+    .btn-danger {
+      background: #dc3545;
+      color: white;
+    }
+    
+    .btn-danger:hover {
+      background: #c82333;
+    }
+    
+    .theme-toggle {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 18px;
+    }
+    
+    .status {
+      text-align: center;
+      margin: 20px 0;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-weight: 500;
+    }
+    
+    .status.success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    
+    .status.error {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    
+    .status.info {
+      background: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+    
+    .camera-container {
+      display: flex;
+      justify-content: center;
+      margin: 30px 0;
+    }
+    
+    .camera-wrapper {
+      position: relative;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+      background: #000;
+    }
+    
+    #video {
+      display: none;
+      width: 100%;
+      height: auto;
+      max-width: 960px;
+      aspect-ratio: 4/3;
+    }
+    
+    #canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-width: 960px;
+      aspect-ratio: 4/3;
+    }
+    
+    .info-panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 30px;
+      text-align: center;
+    }
+    
+    .info-panel h3 {
+      margin: 0 0 15px 0;
+      color: var(--text-primary);
+    }
+    
+    .info-panel p {
+      margin: 0;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    
+    .tolerance-display {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 14px;
+      color: var(--text-primary);
+    }
+    
+    @media (max-width: 1024px) {
+      .container { padding: 15px; }
+      .header h1 { font-size: 2rem; }
+      #video, #canvas { max-width: 100%; }
+      .controls { flex-direction: column; gap: 8px; }
+    }
   </style>
 </head>
 <body>
-  <h1>Live Face Recognition (Dlib/face_recognition)</h1>
-  <div class="row">
-    <button onclick="startCamera()">Start Camera</button>
-    <button onclick="stopCamera()">Stop Camera</button>
-    <a class="btn" href="/reload">Reload encodings</a>
-    <a class="btn" href="/health">Health</a>
-    <span>Tolerance: <code>{{ tol }}</code></span>
+  <div class="container">
+    <div class="header">
+      <h1>Live Face Recognition</h1>
+      <p style="color: var(--text-secondary); margin: 0;">Powered by Dlib & face_recognition</p>
+    </div>
+    
+    <div class="controls">
+      <button class="btn btn-primary" onclick="startCamera()">
+        <span>📹</span> Start Camera
+      </button>
+      <button class="btn btn-danger" onclick="stopCamera()">
+        <span>⏹️</span> Stop Camera
+      </button>
+      <a class="btn btn-secondary" href="/reload">
+        <span>🔄</span> Reload Encodings
+      </a>
+      <a class="btn btn-secondary" href="/health">
+        <span>💚</span> Health Check
+      </a>
+      <div class="tolerance-display">
+        Tolerance: {{ tol }}
+      </div>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark Mode">
+        <span id="theme-icon">🌙</span>
+      </button>
+    </div>
+    
+    <div id="status" class="status info">Click "Start Camera" to begin face recognition</div>
+    
+    <div class="camera-container">
+      <div class="camera-wrapper">
+        <video id="video" autoplay muted></video>
+        <canvas id="canvas" width="960" height="720"></canvas>
+      </div>
+    </div>
+    
+    <div class="info-panel">
+      <h3>💡 Tips</h3>
+      <p>
+        To adjust recognition accuracy, modify the <code>TOLERANCE</code> value in the code 
+        (0.35 for stricter, 0.55 for looser) and click <strong>Reload Encodings</strong>.
+      </p>
+    </div>
   </div>
-  <div id="status" class="status info">Click "Start Camera" to begin face recognition</div>
-  <video id="video" autoplay muted></video>
-  <canvas id="canvas" width="960" height="720"></canvas>
-  <p style="margin-top:18px; color:#666;">Tip: kalau akurasinya terlalu ketat/longgar, ubah <code>TOLERANCE</code> di <code>.env</code> (mis. 0.35 lebih ketat, 0.55 lebih longgar) lalu <b>/reload</b>.</p>
 
   <script>
+    // Dark mode functionality
+    function toggleTheme() {
+      const body = document.body;
+      const themeIcon = document.getElementById('theme-icon');
+      const currentTheme = body.getAttribute('data-theme');
+      
+      if (currentTheme === 'dark') {
+        body.removeAttribute('data-theme');
+        themeIcon.textContent = '🌙';
+        localStorage.setItem('theme', 'light');
+      } else {
+        body.setAttribute('data-theme', 'dark');
+        themeIcon.textContent = '☀️';
+        localStorage.setItem('theme', 'dark');
+      }
+    }
+    
+    // Load saved theme on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      const savedTheme = localStorage.getItem('theme');
+      const themeIcon = document.getElementById('theme-icon');
+      
+      if (savedTheme === 'dark') {
+        document.body.setAttribute('data-theme', 'dark');
+        themeIcon.textContent = '☀️';
+      }
+    });
+
+    // Face recognition functionality
     let stream = null;
     let video = document.getElementById('video');
     let canvas = document.getElementById('canvas');
@@ -396,13 +653,35 @@ INDEX_HTML = """
       return union > 0 ? inter / union : 0;
     }
 
+    function resizeCanvas() {
+      if (!video.videoWidth || !video.videoHeight) return;
+      
+      const containerWidth = canvas.parentElement.clientWidth;
+      const maxWidth = Math.min(960, containerWidth);
+      const aspectRatio = video.videoWidth / video.videoHeight;
+      
+      canvas.width = maxWidth;
+      canvas.height = maxWidth / aspectRatio;
+      
+      // Update CSS size to match canvas dimensions
+      canvas.style.width = maxWidth + 'px';
+      canvas.style.height = (maxWidth / aspectRatio) + 'px';
+    }
+
     function drawDisplay() {
       if (!isProcessing) return;
+      
+      // Resize canvas to match video aspect ratio
+      resizeCanvas();
+      
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const now = Date.now();
       const showFaces = (now - lastFacesTime) < FACES_TTL_MS ? lastFaces : [];
+      
+      // Calculate scaling factors based on actual video dimensions
       const sx = video.videoWidth ? canvas.width / video.videoWidth : 1;
       const sy = video.videoHeight ? canvas.height / video.videoHeight : 1;
+      
       for (const face of showFaces) {
         const { x, y, width, height, name, confidence } = face;
         const dx = Math.round(x * sx);
