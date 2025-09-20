@@ -71,12 +71,8 @@ def fetch_member_images() -> List[Tuple[int, str, str]]:
     try:
         conn = get_conn()
         cur = conn.cursor()
-        print(f"[DB] Executing SQL: {sql}")
         cur.execute(sql)
         rows = cur.fetchall()
-        print(f"[DB] Found {len(rows)} rows")
-        if rows:
-            print(f"[DB] First row: member_id={rows[0][0]}, gym_member_id={rows[0][1]}, first_name='{rows[0][2]}', url={rows[0][3][:50]}...")
         cur.close()
         conn.close()
     except Error as e:
@@ -200,7 +196,7 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
                 names.append(first_name.strip() or f"Member_{member_id}")
                 member_ids.append(member_id)
                 gym_member_id_mapping[member_id] = gym_member_id
-                print(f"[ENC] Loaded from DB member_id={member_id} gym_member_id={gym_member_id} name={names[-1]}")
+                print(f"[ENC] Loaded from DB member_id={member_id} name={names[-1]}")
             else:
                 # Generate new encoding from image
                 print(f"[ENC] Generating new encoding for member_id={member_id}")
@@ -225,7 +221,7 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
                 names.append(first_name.strip() or f"Member_{member_id}")
                 member_ids.append(member_id)
                 gym_member_id_mapping[member_id] = gym_member_id
-                print(f"[ENC] Generated & saved member_id={member_id} gym_member_id={gym_member_id} name={names[-1]}")
+                print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
                 
         except Exception as e:
             print(f"[ENC] Error for member_id={member_id}: {e}")
@@ -322,11 +318,29 @@ class Recognizer:
         self.gym_member_id_mapping: Dict[int, int] = {}  # member_id -> gym_member_id
         self.lock = threading.Lock()
         self.last_reload = 0
+        self.last_successful_login = 0  # Timestamp of last successful login
+        self.cooldown_duration = 3  # 3 seconds cooldown
 
     def reload(self):
         with self.lock:
             self.known_encodings, self.known_names, self.known_ids, self.gym_member_id_mapping = build_known_encodings()
             self.last_reload = time.time()
+    
+    def is_in_cooldown(self):
+        """Check if system is in cooldown period"""
+        current_time = time.time()
+        return (current_time - self.last_successful_login) < self.cooldown_duration
+    
+    def get_cooldown_remaining(self):
+        """Get remaining cooldown time in seconds"""
+        current_time = time.time()
+        elapsed = current_time - self.last_successful_login
+        remaining = self.cooldown_duration - elapsed
+        return max(0, remaining)
+    
+    def set_successful_login(self):
+        """Mark successful login timestamp"""
+        self.last_successful_login = time.time()
 
     def recognize_frame(self, frame_bgr: np.ndarray) -> np.ndarray:
         """
@@ -868,12 +882,20 @@ INDEX_HTML = """
       const sy = video.videoHeight ? canvas.height / video.videoHeight : 1;
       
       for (const face of showFaces) {
-        const { x, y, width, height, name, confidence } = face;
+        const { x, y, width, height, name, confidence, cooldown, cooldown_remaining } = face;
         const dx = Math.round(x * sx);
         const dy = Math.round(y * sy);
         const dw = Math.round(width * sx);
         const dh = Math.round(height * sy);
-        const color = name === 'Unknown' ? '#ff0000' : '#00ff00';
+        
+        // Different colors for different states
+        let color = '#ff0000'; // Default red for unknown
+        if (cooldown) {
+          color = '#ffa500'; // Orange for cooldown
+        } else if (name !== 'Unknown') {
+          color = '#00ff00'; // Green for recognized
+        }
+        
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.strokeRect(dx, dy, dw, dh);
@@ -881,7 +903,13 @@ INDEX_HTML = """
         ctx.fillRect(dx, dy + dh - 25, dw, 25);
         ctx.fillStyle = '#ffffff';
         ctx.font = '14px Arial';
-        ctx.fillText(`${name} (${confidence.toFixed(2)})`, dx + 5, dy + dh - 8);
+        
+        // Display different text based on state
+        if (cooldown) {
+          ctx.fillText(`⏳ Cooldown: ${cooldown_remaining.toFixed(1)}s`, dx + 5, dy + dh - 8);
+        } else {
+          ctx.fillText(`${name} (${confidence.toFixed(2)})`, dx + 5, dy + dh - 8);
+        }
       }
       requestAnimationFrame(drawDisplay);
     }
@@ -926,20 +954,17 @@ def recognize():
             known_names = recognizer.known_names
             known_ids = recognizer.known_ids
         
-        print(f"[RECOG] Processing frame, known faces: {len(known_encs)}")
         
         if not known_encs:
             return {"success": True, "faces": [], "debug": "No known encodings loaded"}
         
         # Detect faces
         boxes = face_recognition.face_locations(rgb, model="hog")
-        print(f"[RECOG] Found {len(boxes)} faces")
         
         if not boxes:
             return {"success": True, "faces": [], "debug": "No faces detected"}
         
         encs = face_recognition.face_encodings(rgb, boxes)
-        print(f"[RECOG] Generated {len(encs)} encodings")
         
         faces = []
         for i, ((top, right, bottom, left), enc) in enumerate(zip(boxes, encs)):
@@ -953,30 +978,59 @@ def recognize():
                 confidence = float(distances[idx])
                 name = known_names[idx] if confidence <= TOLERANCE else "Unknown"
                 member_id = known_ids[idx] if confidence <= TOLERANCE else None
-                print(f"[RECOG] Face {i}: {name} (confidence: {confidence:.3f}, tolerance: {TOLERANCE})")
                 
                 # Process gym gate if member is recognized
                 if member_id and confidence <= TOLERANCE:
-                    # Get gym_member_id for API call
-                    gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
-                    if gym_member_id:
-                        gym_result = process_member_detection(gym_member_id, name)
-                        if gym_result["success"]:
-                            print(f"[GYM] ✅ {gym_result['message']}")
-                        else:
-                            print(f"[GYM] ❌ {gym_result['error']}")
+                    # Check cooldown first
+                    if recognizer.is_in_cooldown():
+                        cooldown_remaining = recognizer.get_cooldown_remaining()
+                        print(f"[GYM] ⏳ Cooldown active: {cooldown_remaining:.1f}s remaining")
+                        # Add cooldown info to face data
+                        faces.append({
+                            "x": int(left),
+                            "y": int(top),
+                            "width": int(right - left),
+                            "height": int(bottom - top),
+                            "name": f"Cooldown: {cooldown_remaining:.1f}s",
+                            "confidence": confidence,
+                            "cooldown": True,
+                            "cooldown_remaining": cooldown_remaining
+                        })
                     else:
-                        print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
-            
-            faces.append({
-                "x": int(left),
-                "y": int(top),
-                "width": int(right - left),
-                "height": int(bottom - top),
-                "name": name,
-                "confidence": confidence,
-                "member_id": member_id
-            })
+                        # Get gym_member_id for API call
+                        gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
+                        if gym_member_id:
+                            gym_result = process_member_detection(gym_member_id, name)
+                            if gym_result["success"]:
+                                print(f"[GYM] ✅ {gym_result['message']}")
+                                # Mark successful login to start cooldown
+                                recognizer.set_successful_login()
+                            else:
+                                print(f"[GYM] ❌ {gym_result['error']}")
+                        else:
+                            print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
+                        
+                        # Add normal face data (not in cooldown)
+                        faces.append({
+                            "x": int(left),
+                            "y": int(top),
+                            "width": int(right - left),
+                            "height": int(bottom - top),
+                            "name": name,
+                            "confidence": confidence,
+                            "member_id": member_id
+                        })
+                else:
+                    # Add face data for unrecognized faces
+                    faces.append({
+                        "x": int(left),
+                        "y": int(top),
+                        "width": int(right - left),
+                        "height": int(bottom - top),
+                        "name": name,
+                        "confidence": confidence,
+                        "member_id": member_id
+                    })
         
         return {"success": True, "faces": faces, "debug": f"Processed {len(faces)} faces"}
         
