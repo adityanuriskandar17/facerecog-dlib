@@ -829,6 +829,7 @@ INDEX_HTML = """
       width: 100%;
       height: 100%;
       object-fit: cover;
+      background: #000;
     }
     
     .info-panel {
@@ -979,7 +980,7 @@ INDEX_HTML = """
     
     <div class="camera-container">
       <div class="camera-wrapper">
-        <video id="video" autoplay muted></video>
+        <video id="video" autoplay muted playsinline></video>
         <canvas id="canvas" width="960" height="720"></canvas>
         <div id="banner" class="banner hidden">
           <div class="banner-content">
@@ -1210,9 +1211,49 @@ INDEX_HTML = """
             facingMode: 'user'
           } 
         });
+        
         video.srcObject = stream;
-        updateStatus('Camera started successfully!', 'success');
-        startProcessing();
+        
+        // Force video to load for Brave/Chrome
+        video.load();
+        
+        // Wait for video to be ready before starting processing
+        video.onloadedmetadata = function() {
+          console.log('[CAMERA] Video metadata loaded');
+          console.log('[CAMERA] Video dimensions:', video.videoWidth, 'x', video.videoHeight);
+          console.log('[CAMERA] Video ready state:', video.readyState);
+          console.log('[CAMERA] Canvas dimensions:', canvas.width, 'x', canvas.height);
+          updateStatus(`Camera started successfully! (${video.videoWidth}x${video.videoHeight})`, 'success');
+          
+          // Force video to play for Brave/Chrome compatibility
+          setTimeout(() => {
+            video.play().then(() => {
+              console.log('[CAMERA] Video play started');
+              startProcessing();
+            }).catch(err => {
+              console.error('[CAMERA] Video play failed:', err);
+              // Still start processing even if play fails
+              startProcessing();
+            });
+          }, 100); // Small delay to ensure video is ready
+        };
+        
+        video.onerror = function(e) {
+          console.error('[CAMERA] Video error:', e);
+          updateStatus('Video error occurred', 'error');
+        };
+        
+        video.oncanplay = function() {
+          console.log('[CAMERA] Video can play');
+        };
+        
+        video.onplaying = function() {
+          console.log('[CAMERA] Video is playing');
+        };
+        
+        video.onloadeddata = function() {
+          console.log('[CAMERA] Video data loaded');
+        };
       } catch (error) {
         updateStatus('Camera access denied or not available: ' + error.message, 'error');
       }
@@ -1392,7 +1433,7 @@ INDEX_HTML = """
     }
 
     function resizeCanvas() {
-      if (!video.videoWidth || !video.videoHeight) return;
+      if (!video || !canvas || !video.videoWidth || !video.videoHeight) return;
       
       const container = canvas.parentElement;
       const containerWidth = container.clientWidth;
@@ -1429,10 +1470,45 @@ INDEX_HTML = """
     function drawDisplay() {
       if (!isProcessing) return;
       
+      // Check if video is ready and has dimensions
+      if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
+        // Video not ready, show loading message
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.font = '20px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Loading camera...', canvas.width / 2, canvas.height / 2);
+        requestAnimationFrame(drawDisplay);
+        return;
+      }
+      
+      // Additional check for Brave/Chrome - ensure video is actually playing
+      if (video.paused || video.ended) {
+        console.log('[CAMERA] Video is paused or ended, attempting to play');
+        video.play().catch(err => console.error('[CAMERA] Play failed:', err));
+        requestAnimationFrame(drawDisplay);
+        return;
+      }
+      
       // Resize canvas to match video aspect ratio
       resizeCanvas();
       
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      // Clear canvas first
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw video frame
+      try {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      } catch (e) {
+        console.error('[DRAW] Error drawing video:', e);
+        ctx.fillStyle = '#ff0000';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Video drawing error', canvas.width / 2, canvas.height / 2);
+      }
+      
       const now = Date.now();
       const showFaces = (now - lastFacesTime) < FACES_TTL_MS ? lastFaces : [];
       
