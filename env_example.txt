@@ -1,0 +1,10 @@
+# Database Configuration
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_DATABASE=deepface
+MYSQL_USER=root
+MYSQL_PASSWORD=your_password_here
+
+# Gym API Configuration
+GYM_API_KEY=your_gym_api_key_here
+GYM_DOOR_ID=19456

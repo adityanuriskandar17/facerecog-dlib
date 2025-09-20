@@ -30,6 +30,12 @@ TOLERANCE = 0.45  # lebih ketat dari default 0.6
 # Jika ingin batasi request gambar (detik)
 REQUEST_TIMEOUT = 15
 
+# Gym API Configuration
+GYM_API_KEY = os.getenv("GYM_API_KEY", "")
+GYM_DOOR_ID = os.getenv("GYM_DOOR_ID", "19456")
+GYM_LOGIN_URL = "https://ftl.gymmasteronline.com/portal/api/v1/login"
+GYM_GATE_URL = "https://ftl.gymmasteronline.com/portal/api/v2/member/kiosk/checkin"
+
 # ===================== DB Helpers =====================
 def get_conn():
     return mysql.connector.connect(
@@ -218,6 +224,84 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int]]:
 
     print(f"[ENC] Selesai. OK={len(encodings)} Skip={len(skipped)}")
     return encodings, names, member_ids
+
+# ===================== Gym API Integration =====================
+def gym_login(member_id: int) -> dict:
+    """
+    Login to gym system and get token
+    """
+    try:
+        payload = {
+            "api_key": GYM_API_KEY,
+            "memberid": member_id
+        }
+        
+        response = requests.post(GYM_LOGIN_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        if data.get("error") is None and data.get("result"):
+            token = data["result"]["token"]
+            expires = data["result"]["expires"]
+            print(f"[GYM] Login successful for member_id={member_id}")
+            return {"success": True, "token": token, "expires": expires}
+        else:
+            print(f"[GYM] Login failed for member_id={member_id}: {data.get('error', 'Unknown error')}")
+            return {"success": False, "error": data.get("error", "Unknown error")}
+            
+    except requests.exceptions.RequestException as e:
+        print(f"[GYM] Login request failed for member_id={member_id}: {e}")
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[GYM] Login error for member_id={member_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+def gym_open_gate(token: str) -> dict:
+    """
+    Open gym gate using token
+    """
+    try:
+        payload = {
+            "api_key": GYM_API_KEY,
+            "door_id": GYM_DOOR_ID,
+            "token": token
+        }
+        
+        response = requests.post(GYM_GATE_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        if data.get("error") is None:
+            print(f"[GYM] Gate opened successfully")
+            return {"success": True, "message": "Gate opened successfully"}
+        else:
+            print(f"[GYM] Gate open failed: {data.get('error', 'Unknown error')}")
+            return {"success": False, "error": data.get("error", "Unknown error")}
+            
+    except requests.exceptions.RequestException as e:
+        print(f"[GYM] Gate open request failed: {e}")
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[GYM] Gate open error: {e}")
+        return {"success": False, "error": str(e)}
+
+def process_member_detection(member_id: int, member_name: str) -> dict:
+    """
+    Process member detection: login and open gate
+    """
+    print(f"[GYM] Processing detection for {member_name} (ID: {member_id})")
+    
+    # Step 1: Login to get token
+    login_result = gym_login(member_id)
+    if not login_result["success"]:
+        return {"success": False, "error": f"Login failed: {login_result['error']}"}
+    
+    # Step 2: Open gate using token
+    gate_result = gym_open_gate(login_result["token"])
+    if not gate_result["success"]:
+        return {"success": False, "error": f"Gate open failed: {gate_result['error']}"}
+    
+    return {"success": True, "message": f"Welcome {member_name}! Gate opened successfully."}
 
 # ===================== Video / Recognition =====================
 class Recognizer:
@@ -829,6 +913,7 @@ def recognize():
         with recognizer.lock:
             known_encs = recognizer.known_encodings
             known_names = recognizer.known_names
+            known_ids = recognizer.known_ids
         
         print(f"[RECOG] Processing frame, known faces: {len(known_encs)}")
         
@@ -851,11 +936,21 @@ def recognize():
             if len(distances) == 0:
                 name = "Unknown"
                 confidence = 1.0
+                member_id = None
             else:
                 idx = int(np.argmin(distances))
                 confidence = float(distances[idx])
                 name = known_names[idx] if confidence <= TOLERANCE else "Unknown"
+                member_id = known_ids[idx] if confidence <= TOLERANCE else None
                 print(f"[RECOG] Face {i}: {name} (confidence: {confidence:.3f}, tolerance: {TOLERANCE})")
+                
+                # Process gym gate if member is recognized
+                if member_id and confidence <= TOLERANCE:
+                    gym_result = process_member_detection(member_id, name)
+                    if gym_result["success"]:
+                        print(f"[GYM] ✅ {gym_result['message']}")
+                    else:
+                        print(f"[GYM] ❌ {gym_result['error']}")
             
             faces.append({
                 "x": int(left),
@@ -863,7 +958,8 @@ def recognize():
                 "width": int(right - left),
                 "height": int(bottom - top),
                 "name": name,
-                "confidence": confidence
+                "confidence": confidence,
+                "member_id": member_id
             })
         
         return {"success": True, "faces": faces, "debug": f"Processed {len(faces)} faces"}
