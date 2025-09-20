@@ -643,14 +643,38 @@ INDEX_HTML = """
       line-height: 1.6;
     }
     
-    .tolerance-display {
+    .door-selector {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       background: var(--bg-secondary);
       border: 1px solid var(--border-color);
       border-radius: 6px;
       padding: 8px 12px;
-      font-family: 'Monaco', 'Menlo', monospace;
+    }
+    
+    .door-selector label {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+      margin: 0;
+    }
+    
+    .door-selector select {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 6px 8px;
       font-size: 14px;
       color: var(--text-primary);
+      cursor: pointer;
+      min-width: 200px;
+    }
+    
+    .door-selector select:focus {
+      outline: none;
+      border-color: var(--accent-color);
+      box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
     }
     
     @media (max-width: 1024px) {
@@ -675,15 +699,17 @@ INDEX_HTML = """
       <button class="btn btn-danger" onclick="stopCamera()">
         <span>⏹️</span> Stop Camera
       </button>
-      <a class="btn btn-secondary" href="/reload">
-        <span>🔄</span> Reload Encodings
-      </a>
-      <a class="btn btn-secondary" href="/health">
-        <span>💚</span> Health Check
-      </a>
-      <div class="tolerance-display">
-        Tolerance: {{ tol }}
+      
+      <div class="door-selector">
+        <label for="doorSelect">Door ID:</label>
+        <select id="doorSelect" onchange="updateDoorId()">
+          <option value="19418">FTL - Center / Reception - CT</option>
+          <option value="19456">FTL - Center / Door 1</option>
+          <option value="19429">FTL - Benhil / Reception - BH</option>
+          <option value="4">FTL - Tebet / Reception - TB</option>
+        </select>
       </div>
+      
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark Mode">
         <span id="theme-icon">🌙</span>
       </button>
@@ -707,13 +733,6 @@ INDEX_HTML = """
       </div>
     </div>
     
-    <div class="info-panel">
-      <h3>💡 Tips</h3>
-      <p>
-        To adjust recognition accuracy, modify the <code>TOLERANCE</code> value in the code 
-        (0.35 for stricter, 0.55 for looser) and click <strong>Reload Encodings</strong>.
-      </p>
-    </div>
   </div>
 
   <script>
@@ -732,6 +751,35 @@ INDEX_HTML = """
         themeIcon.textContent = '☀️';
         localStorage.setItem('theme', 'dark');
       }
+    }
+    
+    // Door ID functionality
+    function updateDoorId() {
+      const doorSelect = document.getElementById('doorSelect');
+      const selectedDoorId = doorSelect.value;
+      
+      // Send door ID to server
+      fetch('/update_door_id', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ door_id: selectedDoorId })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          console.log(`[DOOR] Door ID updated to: ${selectedDoorId}`);
+          updateStatus(`Door ID updated to: ${selectedDoorId}`, 'success');
+        } else {
+          console.error('[DOOR] Failed to update door ID:', data.error);
+          updateStatus(`Failed to update door ID: ${data.error}`, 'error');
+        }
+      })
+      .catch(error => {
+        console.error('[DOOR] Error updating door ID:', error);
+        updateStatus(`Error updating door ID: ${error}`, 'error');
+      });
     }
     
     // Load saved theme on page load
@@ -1012,6 +1060,27 @@ INDEX_HTML = """
 @app.route("/")
 def index():
     return render_template_string(INDEX_HTML, tol=TOLERANCE)
+
+@app.route('/update_door_id', methods=['POST'])
+def update_door_id():
+    try:
+        from flask import request
+        data = request.get_json()
+        door_id = data.get('door_id')
+        
+        if not door_id:
+            return {"success": False, "error": "Door ID is required"}
+        
+        # Update global door ID
+        global GYM_DOOR_ID
+        GYM_DOOR_ID = door_id
+        
+        print(f"[DOOR] Door ID updated to: {door_id}")
+        return {"success": True, "door_id": door_id}
+        
+    except Exception as e:
+        print(f"[DOOR] Error updating door ID: {e}")
+        return {"success": False, "error": str(e)}
 
 @app.route("/recognize", methods=["POST"])
 def recognize():
