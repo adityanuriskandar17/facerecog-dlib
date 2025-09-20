@@ -65,6 +65,7 @@ def fetch_member_images() -> List[Tuple[int, str, str]]:
     WHERE m.status = 1
       AND (f.status IS NULL OR f.status = 1)
       AND (f.file_type_id IS NULL OR f.file_type_id = 1)
+      AND f.title = 'Profile2'
     ORDER BY m.id ASC, f.created_at DESC
     """
     rows: List[Tuple[int, int, str, str, str]] = []
