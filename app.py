@@ -397,6 +397,7 @@ INDEX_HTML = """
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Face Recognition FTL GYM</title>
   <style>
     :root {
@@ -555,7 +556,8 @@ INDEX_HTML = """
       width: 100%;
       max-width: 960px;
       aspect-ratio: 4/3;
-      min-height: 400px;
+      min-height: 300px;
+      max-height: 80vh;
     }
     
     .banner {
@@ -834,6 +836,25 @@ INDEX_HTML = """
       height: 100%;
       object-fit: cover;
       background: #000;
+      max-width: 100%;
+      max-height: 100%;
+    }
+    
+    /* Mobile canvas adjustments */
+    @media (max-width: 768px) {
+      #canvas {
+        object-fit: cover;
+        max-width: 100%;
+        max-height: 100%;
+        width: auto !important;
+        height: auto !important;
+      }
+      
+      .camera-wrapper {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
     }
     
     .info-panel {
@@ -896,6 +917,7 @@ INDEX_HTML = """
       .camera-wrapper { 
         max-width: 100%;
         aspect-ratio: 4/3;
+        max-height: 70vh;
       }
       .controls { flex-direction: column; gap: 8px; }
     }
@@ -905,8 +927,10 @@ INDEX_HTML = """
       .header h1 { font-size: 1.5rem; }
       .camera-wrapper { 
         max-width: 100%;
-        aspect-ratio: 4/3;
+        aspect-ratio: 3/4;
         border-radius: 12px;
+        max-height: 70vh;
+        min-height: 300px;
       }
       .controls { 
         flex-direction: column; 
@@ -929,6 +953,8 @@ INDEX_HTML = """
       .camera-wrapper { 
         aspect-ratio: 3/4;
         border-radius: 8px;
+        max-height: 65vh;
+        min-height: 250px;
       }
       .banner {
         top: 10px;
@@ -940,6 +966,40 @@ INDEX_HTML = """
       }
       .banner-name {
         font-size: 12px;
+      }
+    }
+    
+    /* Mobile landscape orientation */
+    @media (max-width: 768px) and (orientation: landscape) {
+      .camera-wrapper {
+        aspect-ratio: 16/9;
+        max-height: 80vh;
+        min-height: 300px;
+      }
+      .controls {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .controls .btn {
+        padding: 8px 12px;
+        font-size: 12px;
+      }
+    }
+    
+    /* Very small screens */
+    @media (max-width: 360px) {
+      .container { padding: 3px; }
+      .header h1 { font-size: 1rem; }
+      .camera-wrapper { 
+        aspect-ratio: 16/9;
+        max-height: 45vh;
+        min-height: 180px;
+        border-radius: 6px;
+      }
+      .controls .btn {
+        padding: 6px 10px;
+        font-size: 11px;
       }
     }
   </style>
@@ -1157,7 +1217,18 @@ INDEX_HTML = """
     
     // Handle orientation change on mobile
     window.addEventListener('orientationchange', function() {
-      setTimeout(resizeCanvas, 100);
+      setTimeout(() => {
+        resizeCanvas();
+        console.log('[ORIENTATION] Orientation changed, canvas resized');
+      }, 300);
+    });
+    
+    // Handle window resize for mobile
+    window.addEventListener('resize', function() {
+      setTimeout(() => {
+        resizeCanvas();
+        console.log('[RESIZE] Window resized, canvas resized');
+      }, 100);
     });
     
     // Load saved theme on page load
@@ -1442,10 +1513,10 @@ INDEX_HTML = """
       const container = canvas.parentElement;
       const containerWidth = container.clientWidth;
       const containerHeight = container.clientHeight;
-      const aspectRatio = video.videoWidth / video.videoHeight;
+      const videoAspectRatio = video.videoWidth / video.videoHeight;
       
       console.log('[RESIZE] Container:', containerWidth, 'x', containerHeight);
-      console.log('[RESIZE] Video:', video.videoWidth, 'x', video.videoHeight, 'aspect:', aspectRatio);
+      console.log('[RESIZE] Video:', video.videoWidth, 'x', video.videoHeight, 'aspect:', videoAspectRatio);
       
       // For fullscreen mode, use viewport dimensions
       if (container.classList.contains('fullscreen-mode') || document.fullscreenElement) {
@@ -1456,15 +1527,43 @@ INDEX_HTML = """
         return;
       }
       
-      // For normal mode, fill the entire container
-      canvas.width = containerWidth;
-      canvas.height = containerHeight;
+      // For mobile devices, use different aspect ratio handling
+      const isMobile = window.innerWidth <= 768;
+      const isLandscape = window.innerWidth > window.innerHeight;
       
-      // Update CSS size to fill container
-      canvas.style.width = '100%';
-      canvas.style.height = '100%';
+      if (isMobile) {
+        // Mobile: use 3:4 aspect ratio for portrait, 4:3 for landscape
+        const isPortrait = window.innerHeight > window.innerWidth;
+        const targetAspectRatio = isPortrait ? 3/4 : 4/3;
+        
+        let canvasWidth = containerWidth;
+        let canvasHeight = containerWidth / targetAspectRatio;
+        
+        // If height exceeds container, scale down
+        if (canvasHeight > containerHeight) {
+          canvasHeight = containerHeight;
+          canvasWidth = containerHeight * targetAspectRatio;
+        }
+        
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+        canvas.style.width = canvasWidth + 'px';
+        canvas.style.height = canvasHeight + 'px';
+        
+        // Center the canvas
+        canvas.style.margin = '0 auto';
+        canvas.style.display = 'block';
+        
+        console.log('[RESIZE] Mobile canvas:', canvasWidth, 'x', canvasHeight, 'aspect:', targetAspectRatio, 'portrait:', isPortrait);
+      } else {
+        // Desktop: fill the entire container
+        canvas.width = containerWidth;
+        canvas.height = containerHeight;
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+      }
       
-      console.log('[RESIZE] Canvas set to:', canvas.width, 'x', canvas.height);
+      console.log('[RESIZE] Canvas set to:', canvas.width, 'x', canvas.height, 'Mobile:', isMobile);
     }
 
     function drawDisplay() {
@@ -1515,8 +1614,32 @@ INDEX_HTML = """
         if (video.videoWidth > 0 && video.videoHeight > 0) {
           // Try different drawing methods for better compatibility
           try {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            console.log('[DRAW] Video frame drawn successfully');
+            // For mobile, use cover method to maintain aspect ratio
+            const isMobile = window.innerWidth <= 768;
+            if (isMobile) {
+              // Calculate aspect ratio preserving scaling
+              const videoAspect = video.videoWidth / video.videoHeight;
+              const canvasAspect = canvas.width / canvas.height;
+              
+              let sourceX = 0, sourceY = 0, sourceWidth = video.videoWidth, sourceHeight = video.videoHeight;
+              let destX = 0, destY = 0, destWidth = canvas.width, destHeight = canvas.height;
+              
+              if (videoAspect > canvasAspect) {
+                // Video is wider, crop sides
+                sourceWidth = video.videoHeight * canvasAspect;
+                sourceX = (video.videoWidth - sourceWidth) / 2;
+              } else {
+                // Video is taller, crop top/bottom
+                sourceHeight = video.videoWidth / canvasAspect;
+                sourceY = (video.videoHeight - sourceHeight) / 2;
+              }
+              
+              ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, destX, destY, destWidth, destHeight);
+              console.log('[DRAW] Mobile video frame drawn with aspect ratio preservation');
+            } else {
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              console.log('[DRAW] Desktop video frame drawn successfully');
+            }
           } catch (drawError) {
             console.error('[DRAW] drawImage failed:', drawError);
             // Fallback: try with source dimensions
