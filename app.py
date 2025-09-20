@@ -319,7 +319,8 @@ class Recognizer:
         self.lock = threading.Lock()
         self.last_reload = 0
         self.last_successful_login = 0  # Timestamp of last successful login
-        self.cooldown_duration = 3  # 3 seconds cooldown
+        self.last_successful_member = ""  # Name of last successful member
+        self.cooldown_duration = 10  # 10 seconds cooldown
 
     def reload(self):
         with self.lock:
@@ -338,9 +339,10 @@ class Recognizer:
         remaining = self.cooldown_duration - elapsed
         return max(0, remaining)
     
-    def set_successful_login(self):
-        """Mark successful login timestamp"""
+    def set_successful_login(self, member_name: str):
+        """Mark successful login timestamp and store member name"""
         self.last_successful_login = time.time()
+        self.last_successful_member = member_name
 
     def recognize_frame(self, frame_bgr: np.ndarray) -> np.ndarray:
         """
@@ -550,6 +552,61 @@ INDEX_HTML = """
       background: #000;
     }
     
+    .banner {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: white;
+      padding: 15px 25px;
+      border-radius: 12px;
+      box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3);
+      z-index: 10;
+      animation: slideDown 0.5s ease-out;
+    }
+    
+    .banner.hidden {
+      display: none;
+    }
+    
+    .banner-content {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    .banner-icon {
+      font-size: 24px;
+    }
+    
+    .banner-text {
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .banner-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+    
+    .banner-name {
+      font-size: 14px;
+      opacity: 0.9;
+    }
+    
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(-20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+    }
+    
     #video {
       display: none;
       width: 100%;
@@ -607,7 +664,7 @@ INDEX_HTML = """
 <body>
   <div class="container">
     <div class="header">
-      <h1>Live Face Recognition</h1>
+      <h1>Face Recognition FTL GYM</h1>
       <p style="color: var(--text-secondary); margin: 0;">Powered by Dlib & face_recognition</p>
     </div>
     
@@ -638,6 +695,15 @@ INDEX_HTML = """
       <div class="camera-wrapper">
         <video id="video" autoplay muted></video>
         <canvas id="canvas" width="960" height="720"></canvas>
+        <div id="banner" class="banner hidden">
+          <div class="banner-content">
+            <div class="banner-icon">✅</div>
+            <div class="banner-text">
+              <div class="banner-title">Access Granted</div>
+              <div class="banner-name">Nama: <span id="banner-name"></span></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     
@@ -780,6 +846,7 @@ INDEX_HTML = """
         .then(data => {
           if (data.success) {
             updateFaces(data.faces, scale);
+            updateBanner(data.banner);
           } else {
             console.error('Recognition failed:', data.error);
           }
@@ -810,6 +877,27 @@ INDEX_HTML = """
         lastFaces = smoothFaces(lastFaces, upscaled);
       }
       lastFacesTime = Date.now();
+    }
+    
+    function updateBanner(bannerInfo) {
+      const banner = document.getElementById('banner');
+      const bannerName = document.getElementById('banner-name');
+      
+      console.log('[BANNER] Received banner info:', bannerInfo);
+      
+      if (bannerInfo && bannerInfo.show) {
+        console.log('[BANNER] Showing banner for:', bannerInfo.name);
+        bannerName.textContent = bannerInfo.name;
+        banner.classList.remove('hidden');
+        
+        // Auto hide after 2 seconds
+        setTimeout(() => {
+          console.log('[BANNER] Hiding banner');
+          banner.classList.add('hidden');
+        }, 2000);
+      } else {
+        banner.classList.add('hidden');
+      }
     }
 
     function smoothFaces(prev, curr) {
@@ -1019,7 +1107,7 @@ def recognize():
                     if gym_result["success"]:
                         print(f"[GYM] ✅ {gym_result['message']}")
                         # Mark successful login to start cooldown
-                        recognizer.set_successful_login()
+                        recognizer.set_successful_login(name)
                     else:
                         print(f"[GYM] ❌ {gym_result['error']}")
                 else:
@@ -1047,7 +1135,25 @@ def recognize():
                 "member_id": member_id
             })
         
-        return {"success": True, "faces": faces, "debug": f"Processed {len(faces)} faces"}
+        # Add banner info if there was a recent successful login
+        banner_info = None
+        if recognizer.last_successful_member:
+            # Show banner for 2 seconds after successful login
+            time_since_login = time.time() - recognizer.last_successful_login
+            if time_since_login < 2.0:  # Show banner for 2 seconds
+                banner_info = {
+                    "show": True,
+                    "message": f"Access Granted",
+                    "name": recognizer.last_successful_member
+                }
+                print(f"[BANNER] Showing banner for {recognizer.last_successful_member} ({time_since_login:.1f}s ago)")
+        
+        return {
+            "success": True, 
+            "faces": faces, 
+            "banner": banner_info,
+            "debug": f"Processed {len(faces)} faces"
+        }
         
     except Exception as e:
         print(f"[RECOG] Error: {e}")
