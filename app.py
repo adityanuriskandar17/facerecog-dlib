@@ -51,9 +51,9 @@ def get_conn():
         autocommit=True,
     )
 
-def fetch_member_images() -> List[Tuple[int, str, str]]:
+def fetch_member_images() -> List[Tuple[int, str, str, str]]:
     """
-    Ambil (member_id, first_name, full_url) untuk foto terbaru per member yang aktif.
+    Ambil (member_id, first_name, last_name, full_url) untuk foto terbaru per member yang aktif.
     Kita ambil semua kemudian reduce ke 'latest per member_id'.
     """
     sql = """
@@ -61,6 +61,7 @@ def fetch_member_images() -> List[Tuple[int, str, str]]:
         m.id AS member_id,
         m.member_id AS gym_member_id,
         COALESCE(m.first_name, CONCAT('Member_', m.id)) AS first_name,
+        COALESCE(m.last_name, '') AS last_name,
         CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url,
         f.created_at
     FROM member m
@@ -71,7 +72,7 @@ def fetch_member_images() -> List[Tuple[int, str, str]]:
       AND f.title = 'Profile2'
     ORDER BY m.id ASC, f.created_at DESC
     """
-    rows: List[Tuple[int, int, str, str, str]] = []
+    rows: List[Tuple[int, int, str, str, str, str]] = []
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -83,10 +84,10 @@ def fetch_member_images() -> List[Tuple[int, str, str]]:
         print(f"[DB] Error: {e}")
         return []
 
-    latest_per_member: "OrderedDict[int, Tuple[int,int,str,str]]" = OrderedDict()
-    for member_id, gym_member_id, first_name, full_url, created_at in rows:
+    latest_per_member: "OrderedDict[int, Tuple[int,int,str,str,str]]" = OrderedDict()
+    for member_id, gym_member_id, first_name, last_name, full_url, created_at in rows:
         if member_id not in latest_per_member:
-            latest_per_member[member_id] = (member_id, gym_member_id, first_name, full_url)
+            latest_per_member[member_id] = (member_id, gym_member_id, first_name, last_name, full_url)
     return list(latest_per_member.values())
 
 # ===================== Image / Encoding =====================
@@ -193,6 +194,7 @@ def regenerate_missing_encodings():
         # Get members with NULL or invalid encodings
         cur.execute("""
             SELECT m.id, m.member_id, COALESCE(m.first_name, CONCAT('Member_', m.id)) as first_name,
+                   COALESCE(m.last_name, '') as last_name,
                    CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url
             FROM member m
             JOIN member_file f ON f.member_id = m.id
@@ -213,7 +215,7 @@ def regenerate_missing_encodings():
         success_count = 0
         error_count = 0
         
-        for member_id, gym_member_id, first_name, full_url in members:
+        for member_id, gym_member_id, first_name, last_name, full_url in members:
             try:
                 print(f"[ENC] Regenerating encoding for member_id={member_id}")
                 img = url_to_rgb_array(full_url)
@@ -262,15 +264,20 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
     skipped: List[Tuple[int, str]] = []
 
     print(f"[ENC] Mulai load {len(sources)} member image(s)")
-    for member_id, gym_member_id, first_name, full_url in sources:
+    for member_id, gym_member_id, first_name, last_name, full_url in sources:
         try:
             # Try to load from database first
             stored_encoding = load_encoding_from_db(member_id)
             
+            # Create full name
+            full_name = f"{first_name.strip()} {last_name.strip()}".strip()
+            if not full_name or full_name == " ":
+                full_name = first_name.strip() or f"Member_{member_id}"
+            
             if stored_encoding is not None:
                 # Use stored encoding
                 encodings.append(stored_encoding)
-                names.append(first_name.strip() or f"Member_{member_id}")
+                names.append(full_name)
                 member_ids.append(member_id)
                 gym_member_id_mapping[member_id] = gym_member_id
                 print(f"[ENC] Loaded from DB member_id={member_id} name={names[-1]}")
@@ -296,7 +303,7 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
                 save_encoding_to_db(member_id, encoding[0])
                 
                 encodings.append(encoding[0])
-                names.append(first_name.strip() or f"Member_{member_id}")
+                names.append(full_name)
                 member_ids.append(member_id)
                 gym_member_id_mapping[member_id] = gym_member_id
                 print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
@@ -446,7 +453,7 @@ class Recognizer:
         self.last_reload = 0
         # Cooldown per device
         self.device_cooldowns: Dict[str, Dict] = {}  # device_id -> {last_login: timestamp, member: name}
-        self.cooldown_duration = 60  # 10 seconds cooldown
+        self.cooldown_duration = 10  # 10 seconds cooldown
         # Track loaded member IDs for new data detection
         self.loaded_member_ids: set = set()
         # Auto-check interval for new data (seconds)
@@ -476,7 +483,7 @@ class Recognizer:
             
             # Get all active members with images
             sources = fetch_member_images()
-            current_member_ids = {member_id for member_id, _, _, _ in sources}
+            current_member_ids = {member_id for member_id, _, _, _, _ in sources}
             
             print(f"[AUTO-CHECK] Current DB members: {len(current_member_ids)}")
             print(f"[AUTO-CHECK] Loaded members: {len(self.loaded_member_ids)}")
@@ -495,7 +502,7 @@ class Recognizer:
             import traceback
             traceback.print_exc()
     
-    def process_new_members(self, new_member_ids: set, all_sources: List[Tuple[int, int, str, str]]):
+    def process_new_members(self, new_member_ids: set, all_sources: List[Tuple[int, int, str, str, str]]):
         """
         Process new members and generate their encodings
         """
@@ -508,7 +515,7 @@ class Recognizer:
         
         print(f"[AUTO-CHECK] Processing {len(new_member_ids)} new members...")
         
-        for member_id, gym_member_id, first_name, full_url in all_sources:
+        for member_id, gym_member_id, first_name, last_name, full_url in all_sources:
             if member_id not in new_member_ids:
                 continue
                 
@@ -516,10 +523,15 @@ class Recognizer:
                 # Check if encoding already exists in DB
                 stored_encoding = load_encoding_from_db(member_id)
                 
+                # Create full name
+                full_name = f"{first_name.strip()} {last_name.strip()}".strip()
+                if not full_name or full_name == " ":
+                    full_name = first_name.strip() or f"Member_{member_id}"
+                
                 if stored_encoding is not None:
                     # Use existing encoding
                     new_encodings.append(stored_encoding)
-                    new_names.append(first_name.strip() or f"Member_{member_id}")
+                    new_names.append(full_name)
                     new_member_ids_list.append(member_id)
                     new_gym_member_id_mapping[member_id] = gym_member_id
                     print(f"[AUTO-CHECK] Loaded existing encoding for member_id={member_id}")
@@ -544,7 +556,7 @@ class Recognizer:
                     save_encoding_to_db(member_id, encoding[0])
                     
                     new_encodings.append(encoding[0])
-                    new_names.append(first_name.strip() or f"Member_{member_id}")
+                    new_names.append(full_name)
                     new_member_ids_list.append(member_id)
                     new_gym_member_id_mapping[member_id] = gym_member_id
                     print(f"[AUTO-CHECK] Generated & saved encoding for member_id={member_id}")
@@ -1656,7 +1668,7 @@ INDEX_HTML = """
     }
 
     let lastProcessTime = 0;
-    let PROCESS_INTERVAL = 30; // recognition cadence - will be adjusted dynamically
+    let PROCESS_INTERVAL = 60; // recognition cadence - will be adjusted dynamically
     let performanceMetrics = {
       avgResponseTime: 0,
       requestCount: 0,
@@ -1762,13 +1774,28 @@ INDEX_HTML = """
         bannerName.textContent = bannerInfo.name;
         banner.classList.remove('hidden');
         
-        // Auto hide after 2 seconds
-        setTimeout(() => {
-          console.log('[BANNER] Hiding banner');
-          banner.classList.add('hidden');
-        }, 2000);
+        // Clear any existing timeout
+        if (window.bannerTimeout) {
+          clearTimeout(window.bannerTimeout);
+        }
+        
+        // Only set timeout if not in cooldown (banner will be controlled by cooldown)
+        if (!bannerInfo.cooldown) {
+          // Auto hide after 3 seconds only if not in cooldown
+          window.bannerTimeout = setTimeout(() => {
+            console.log('[BANNER] Hiding banner');
+            banner.classList.add('hidden');
+          }, 3000);
+        }
       } else {
-        banner.classList.add('hidden');
+        // Only hide if explicitly told to hide
+        if (bannerInfo === false || bannerInfo === null) {
+          banner.classList.add('hidden');
+          if (window.bannerTimeout) {
+            clearTimeout(window.bannerTimeout);
+          }
+        }
+        // If bannerInfo is undefined, don't change display state
       }
     }
 
@@ -1783,7 +1810,11 @@ INDEX_HTML = """
         cooldownTime.textContent = cooldownInfo.remaining.toFixed(1);
         cooldownDisplay.classList.remove('hidden');
       } else {
-        cooldownDisplay.classList.add('hidden');
+        // Only hide if cooldown is explicitly false or not provided
+        if (cooldownInfo === false || cooldownInfo === null) {
+          cooldownDisplay.classList.add('hidden');
+        }
+        // If cooldownInfo is undefined, don't change display state
       }
     }
     
@@ -2161,16 +2192,29 @@ def recognize():
             name = known_names[idx] if confidence <= TOLERANCE else "Unknown"
             member_id = known_ids[idx] if confidence <= TOLERANCE else None
         
+        # Get device ID for cooldown check
+        device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
+        
+        # Always add face data for display (bounding box should always show)
+        face_data = {
+            "x": int(left),
+            "y": int(top),
+            "width": int(right - left),
+            "height": int(bottom - top),
+            "name": name,
+            "confidence": confidence,
+            "member_id": member_id
+        }
+        
         # Process gym gate if member is recognized
         if member_id and confidence <= TOLERANCE:
-            # Get device ID for cooldown check
-            device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
-            
             # Check cooldown for this specific device
             if recognizer.is_in_cooldown(device_id):
                 cooldown_remaining = recognizer.get_cooldown_remaining(device_id)
                 print(f"[GYM] ⏳ Device {device_id} cooldown active: {cooldown_remaining:.1f}s remaining")
-                # Don't add cooldown to face data, it will be shown on screen
+                # Add cooldown info to face data
+                face_data["cooldown"] = True
+                face_data["cooldown_remaining"] = cooldown_remaining
             else:
                 # Get gym_member_id for API call
                 gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
@@ -2189,47 +2233,13 @@ def recognize():
                         print(f"[GYM] ❌ {gym_result['error']}")
                 else:
                     print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
-                
-                # Add normal face data (not in cooldown)
-                faces.append({
-                    "x": int(left),
-                    "y": int(top),
-                    "width": int(right - left),
-                    "height": int(bottom - top),
-                    "name": name,
-                    "confidence": confidence,
-                    "member_id": member_id
-                })
-        else:
-            # Add face data for unrecognized faces
-            faces.append({
-                "x": int(left),
-                "y": int(top),
-                "width": int(right - left),
-                "height": int(bottom - top),
-                "name": name,
-                "confidence": confidence,
-                "member_id": member_id
-            })
         
-        # Get device ID for banner and cooldown info
-        device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
+        # Always add face data to faces array
+        faces.append(face_data)
         
         # Add banner info if there was a recent successful login for this device
         banner_info = None
         last_successful_member = recognizer.get_last_successful_member(device_id)
-        if last_successful_member:
-            # Show banner for 2 seconds after successful login
-            device_data = recognizer.device_cooldowns.get(device_id, {})
-            last_login_time = device_data.get('last_login', 0)
-            time_since_login = time.time() - last_login_time
-            if time_since_login < 2.0:  # Show banner for 2 seconds
-                banner_info = {
-                    "show": True,
-                    "message": f"Access Granted",
-                    "name": last_successful_member
-                }
-                print(f"[BANNER] Device {device_id} showing banner for {last_successful_member} ({time_since_login:.1f}s ago)")
         
         # Add cooldown info if this device is in cooldown
         cooldown_info = None
@@ -2240,6 +2250,28 @@ def recognize():
                 "remaining": cooldown_remaining
             }
             print(f"[COOLDOWN] Device {device_id} showing cooldown: {cooldown_remaining:.1f}s remaining")
+            
+            # Show Access Granted banner during cooldown if there was a successful login
+            if last_successful_member:
+                banner_info = {
+                    "show": True,
+                    "message": f"Access Granted",
+                    "name": last_successful_member,
+                    "cooldown": True
+                }
+                print(f"[BANNER] Device {device_id} showing banner for {last_successful_member} during cooldown")
+        elif last_successful_member:
+            # Show banner for 3 seconds after successful login (if not in cooldown)
+            device_data = recognizer.device_cooldowns.get(device_id, {})
+            last_login_time = device_data.get('last_login', 0)
+            time_since_login = time.time() - last_login_time
+            if time_since_login < 3.0:  # Show banner for 3 seconds
+                banner_info = {
+                    "show": True,
+                    "message": f"Access Granted",
+                    "name": last_successful_member
+                }
+                print(f"[BANNER] Device {device_id} showing banner for {last_successful_member} ({time_since_login:.1f}s ago)")
         
         return {
             "success": True, 
@@ -2357,7 +2389,7 @@ def debug_members_route():
     try:
         # Get current members from DB
         sources = fetch_member_images()
-        current_member_ids = {member_id for member_id, _, _, _ in sources}
+        current_member_ids = {member_id for member_id, _, _, _, _ in sources}
         
         # Get loaded members
         loaded_member_ids = recognizer.loaded_member_ids
