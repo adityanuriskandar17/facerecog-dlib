@@ -36,6 +36,9 @@ GYM_DOOR_ID = os.getenv("GYM_DOOR_ID", "19456")
 GYM_LOGIN_URL = os.getenv("GYM_LOGIN_URL", "")
 GYM_GATE_URL = os.getenv("GYM_GATE_URL", "")
 
+# Store door IDs per session/device
+device_door_ids = {}
+
 
 # ===================== DB Helpers =====================
 def get_conn():
@@ -164,11 +167,84 @@ def load_encoding_from_db(member_id: int) -> np.ndarray:
         conn.close()
         
         if result and result[0]:
-            return np.frombuffer(result[0], dtype=np.float64)
+            encoding = np.frombuffer(result[0], dtype=np.float64)
+            # Validate encoding size (should be 128 for face_recognition)
+            if len(encoding) == 128:
+                return encoding
+            else:
+                print(f"[DB] Invalid encoding size for member_id={member_id}: {len(encoding)}")
+                return None
         return None
     except Error as e:
         print(f"[DB] Error loading encoding for member_id={member_id}: {e}")
         return None
+
+def regenerate_missing_encodings():
+    """
+    Regenerate ENC for all members who don't have valid encoding in database
+    """
+    print("[ENC] Starting regeneration of missing encodings...")
+    
+    # Get all members without valid encodings
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Get members with NULL or invalid encodings
+        cur.execute("""
+            SELECT m.id, m.member_id, COALESCE(m.first_name, CONCAT('Member_', m.id)) as first_name,
+                   CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url
+            FROM member m
+            JOIN member_file f ON f.member_id = m.id
+            WHERE m.status = 1
+              AND (f.status IS NULL OR f.status = 1)
+              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
+              AND f.title = 'Profile2'
+              AND (m.enc IS NULL OR LENGTH(m.enc) != 1024)
+            ORDER BY m.id ASC
+        """)
+        
+        members = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        print(f"[ENC] Found {len(members)} members without valid encodings")
+        
+        success_count = 0
+        error_count = 0
+        
+        for member_id, gym_member_id, first_name, full_url in members:
+            try:
+                print(f"[ENC] Regenerating encoding for member_id={member_id}")
+                img = url_to_rgb_array(full_url)
+                boxes = face_recognition.face_locations(img, model="hog")
+                
+                if not boxes:
+                    print(f"[ENC] No face found for member_id={member_id}")
+                    error_count += 1
+                    continue
+                    
+                encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
+                if not encoding:
+                    print(f"[ENC] Failed to generate encoding for member_id={member_id}")
+                    error_count += 1
+                    continue
+                    
+                # Save to database
+                save_encoding_to_db(member_id, encoding[0])
+                success_count += 1
+                print(f"[ENC] Successfully regenerated encoding for member_id={member_id}")
+                
+            except Exception as e:
+                print(f"[ENC] Error regenerating encoding for member_id={member_id}: {e}")
+                error_count += 1
+        
+        print(f"[ENC] Regeneration complete. Success: {success_count}, Errors: {error_count}")
+        return {"success": True, "success_count": success_count, "error_count": error_count}
+        
+    except Error as e:
+        print(f"[ENC] Database error during regeneration: {e}")
+        return {"success": False, "error": str(e)}
 
 def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dict[int, int]]:
     """
@@ -189,41 +265,41 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
     for member_id, gym_member_id, first_name, full_url in sources:
         try:
             # Try to load from database first
-            # stored_encoding = load_encoding_from_db(member_id)
+            stored_encoding = load_encoding_from_db(member_id)
             
-            # if stored_encoding is not None:
-            #     # Use stored encoding
-            #     encodings.append(stored_encoding)
-            #     names.append(first_name.strip() or f"Member_{member_id}")
-            #     member_ids.append(member_id)
-            #     gym_member_id_mapping[member_id] = gym_member_id
-            #     print(f"[ENC] Loaded from DB member_id={member_id} name={names[-1]}")
-            # else:
-            # Generate new encoding from image (always generate, skip DB loading)
-            print(f"[ENC] Generating new encoding for member_id={member_id}")
-            img = url_to_rgb_array(full_url)
-            boxes = face_recognition.face_locations(img, model="hog")
-            
-            if not boxes:
-                print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
-                skipped.append((member_id, "no_face"))
-                continue
+            if stored_encoding is not None:
+                # Use stored encoding
+                encodings.append(stored_encoding)
+                names.append(first_name.strip() or f"Member_{member_id}")
+                member_ids.append(member_id)
+                gym_member_id_mapping[member_id] = gym_member_id
+                print(f"[ENC] Loaded from DB member_id={member_id} name={names[-1]}")
+            else:
+                # Generate new encoding from image if not in DB
+                print(f"[ENC] Generating new encoding for member_id={member_id}")
+                img = url_to_rgb_array(full_url)
+                boxes = face_recognition.face_locations(img, model="hog")
                 
-            # Ambil wajah pertama
-            encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
-            if not encoding:
-                print(f"[ENC] Encoding gagal di member_id={member_id}")
-                skipped.append((member_id, "no_encoding"))
-                continue
+                if not boxes:
+                    print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
+                    skipped.append((member_id, "no_face"))
+                    continue
+                    
+                # Ambil wajah pertama
+                encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
+                if not encoding:
+                    print(f"[ENC] Encoding gagal di member_id={member_id}")
+                    skipped.append((member_id, "no_encoding"))
+                    continue
+                    
+                # Save to database
+                save_encoding_to_db(member_id, encoding[0])
                 
-            # Save to database
-            # save_encoding_to_db(member_id, encoding[0])  # Commented: Don't save to DB for now
-            
-            encodings.append(encoding[0])
-            names.append(first_name.strip() or f"Member_{member_id}")
-            member_ids.append(member_id)
-            gym_member_id_mapping[member_id] = gym_member_id
-            print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
+                encodings.append(encoding[0])
+                names.append(first_name.strip() or f"Member_{member_id}")
+                member_ids.append(member_id)
+                gym_member_id_mapping[member_id] = gym_member_id
+                print(f"[ENC] Generated & saved member_id={member_id} name={names[-1]}")
                 
         except Exception as e:
             print(f"[ENC] Error for member_id={member_id}: {e}")
@@ -293,6 +369,36 @@ def gym_open_gate(token: str) -> dict:
         print(f"[GYM] Gate open error: {e}")
         return {"success": False, "error": str(e)}
 
+def gym_open_gate_with_door(token: str, door_id: str) -> dict:
+    """
+    Open gym gate using token with specific door ID
+    """
+    try:
+        payload = {
+            "api_key": GYM_API_KEY,
+            "doorid": door_id,
+            "token": token
+        }
+        
+        print(f"[GYM] Opening gate with door ID: {door_id}")
+        response = requests.post(GYM_GATE_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        if data.get("error") is None:
+            print(f"[GYM] Gate {door_id} opened successfully")
+            return {"success": True, "message": f"Gate {door_id} opened successfully"}
+        else:
+            print(f"[GYM] Gate {door_id} open failed: {data.get('error', 'Unknown error')}")
+            return {"success": False, "error": data.get("error", "Unknown error")}
+            
+    except requests.exceptions.RequestException as e:
+        print(f"[GYM] Gate {door_id} open request failed: {e}")
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        print(f"[GYM] Gate {door_id} open error: {e}")
+        return {"success": False, "error": str(e)}
+
 def process_member_detection(member_id: int, member_name: str) -> dict:
     """
     Process member detection: login and open gate
@@ -311,6 +417,24 @@ def process_member_detection(member_id: int, member_name: str) -> dict:
     
     return {"success": True, "message": f"Welcome {member_name}! Gate opened successfully."}
 
+def process_member_detection_with_door(member_id: int, member_name: str, door_id: str) -> dict:
+    """
+    Process member detection with specific door ID: login and open gate
+    """
+    print(f"[GYM] Processing detection for {member_name} (ID: {member_id}) with door {door_id}")
+    
+    # Step 1: Login to get token
+    login_result = gym_login(member_id)
+    if not login_result["success"]:
+        return {"success": False, "error": f"Login failed: {login_result['error']}"}
+    
+    # Step 2: Open gate using token with specific door ID
+    gate_result = gym_open_gate_with_door(login_result["token"], door_id)
+    if not gate_result["success"]:
+        return {"success": False, "error": f"Gate open failed: {gate_result['error']}"}
+    
+    return {"success": True, "message": f"Welcome {member_name}! Gate {door_id} opened successfully."}
+
 # ===================== Video / Recognition =====================
 class Recognizer:
     def __init__(self):
@@ -320,31 +444,56 @@ class Recognizer:
         self.gym_member_id_mapping: Dict[int, int] = {}  # member_id -> gym_member_id
         self.lock = threading.Lock()
         self.last_reload = 0
-        self.last_successful_login = 0  # Timestamp of last successful login
-        self.last_successful_member = ""  # Name of last successful member
-        self.cooldown_duration = 10  # 10 seconds cooldown
+        # Cooldown per device
+        self.device_cooldowns: Dict[str, Dict] = {}  # device_id -> {last_login: timestamp, member: name}
+        self.cooldown_duration = 3  # 10 seconds cooldown
 
     def reload(self):
         with self.lock:
             self.known_encodings, self.known_names, self.known_ids, self.gym_member_id_mapping = build_known_encodings()
             self.last_reload = time.time()
     
-    def is_in_cooldown(self):
-        """Check if system is in cooldown period"""
+    def is_in_cooldown(self, device_id: str = None):
+        """Check if system is in cooldown period for specific device"""
+        if not device_id:
+            return False
         current_time = time.time()
-        return (current_time - self.last_successful_login) < self.cooldown_duration
+        device_data = self.device_cooldowns.get(device_id)
+        if not device_data:
+            return False
+        return (current_time - device_data.get('last_login', 0)) < self.cooldown_duration
     
-    def get_cooldown_remaining(self):
-        """Get remaining cooldown time in seconds"""
+    def get_cooldown_remaining(self, device_id: str = None):
+        """Get remaining cooldown time in seconds for specific device"""
+        if not device_id:
+            return 0
         current_time = time.time()
-        elapsed = current_time - self.last_successful_login
+        device_data = self.device_cooldowns.get(device_id)
+        if not device_data:
+            return 0
+        elapsed = current_time - device_data.get('last_login', 0)
         remaining = self.cooldown_duration - elapsed
         return max(0, remaining)
     
-    def set_successful_login(self, member_name: str):
-        """Mark successful login timestamp and store member name"""
-        self.last_successful_login = time.time()
-        self.last_successful_member = member_name
+    def set_successful_login(self, member_name: str, device_id: str = None):
+        """Mark successful login timestamp and store member name for specific device"""
+        if not device_id:
+            return
+        current_time = time.time()
+        self.device_cooldowns[device_id] = {
+            'last_login': current_time,
+            'member': member_name
+        }
+        print(f"[COOLDOWN] Device {device_id} cooldown set for {member_name}")
+    
+    def get_last_successful_member(self, device_id: str = None):
+        """Get last successful member name for specific device"""
+        if not device_id:
+            return ""
+        device_data = self.device_cooldowns.get(device_id)
+        if not device_data:
+            return ""
+        return device_data.get('member', "")
 
     def recognize_frame(self, frame_bgr: np.ndarray) -> np.ndarray:
         """
@@ -1091,10 +1240,21 @@ INDEX_HTML = """
       }
     }
     
+    // Generate unique device ID
+    function getDeviceId() {
+      let deviceId = localStorage.getItem('deviceId');
+      if (!deviceId) {
+        deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        localStorage.setItem('deviceId', deviceId);
+      }
+      return deviceId;
+    }
+    
     // Door ID functionality
     function updateDoorId() {
       const doorSelect = document.getElementById('doorSelect');
       const selectedDoorId = doorSelect.value;
+      const deviceId = getDeviceId();
       
       // If no door selected, don't send to server
       if (!selectedDoorId) {
@@ -1102,18 +1262,24 @@ INDEX_HTML = """
         return;
       }
       
-      // Send door ID to server
+      console.log(`[DOOR] Updating door ID for device ${deviceId} to: ${selectedDoorId}`);
+      
+      // Send door ID to server with device ID
       fetch('/update_door_id', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Device-ID': deviceId
         },
-        body: JSON.stringify({ door_id: selectedDoorId })
+        body: JSON.stringify({ 
+          door_id: selectedDoorId,
+          device_id: deviceId
+        })
       })
       .then(response => response.json())
       .then(data => {
         if (data.success) {
-          console.log(`[DOOR] Door ID updated to: ${selectedDoorId}`);
+          console.log(`[DOOR] Device ${deviceId} door ID updated to: ${selectedDoorId}`);
           updateStatus(`Cabang dipilih: ${doorSelect.options[doorSelect.selectedIndex].text}`, 'success');
         } else {
           console.error('[DOOR] Failed to update door ID:', data.error);
@@ -1277,6 +1443,10 @@ INDEX_HTML = """
         return;
       }
       
+      // Ensure door ID is set for this device
+      const deviceId = getDeviceId();
+      console.log(`[CAMERA] Starting camera for device: ${deviceId}`);
+      
       try {
         updateStatus('Requesting camera access...', 'info');
         stream = await navigator.mediaDevices.getUserMedia({ 
@@ -1351,7 +1521,12 @@ INDEX_HTML = """
     }
 
     let lastProcessTime = 0;
-    const PROCESS_INTERVAL = 60; // recognition cadence
+    let PROCESS_INTERVAL = 30; // recognition cadence - will be adjusted dynamically
+    let performanceMetrics = {
+      avgResponseTime: 0,
+      requestCount: 0,
+      slowRequests: 0
+    };
 
     function processFrame() {
       if (!stream || !video.videoWidth) {
@@ -1371,7 +1546,7 @@ INDEX_HTML = """
       lastProcessTime = now;
 
       // Downscale for recognition to reduce bandwidth/CPU
-      const targetW = 640;
+      const targetW = 320;  // Reduced from 640 to 320 for faster processing
       const scale = targetW / video.videoWidth;
       const targetH = Math.round(video.videoHeight * scale);
       workCanvas.width = targetW;
@@ -1385,16 +1560,26 @@ INDEX_HTML = """
       inFlight = true;
 
       // Send frame to server for face recognition
+      const requestStartTime = Date.now();
+      
       workCanvas.toBlob(function(blob) {
         const formData = new FormData();
         formData.append('frame', blob);
         
+        const deviceId = getDeviceId();
+        
         fetch('/recognize', {
           method: 'POST',
+          headers: {
+            'X-Device-ID': deviceId
+          },
           body: formData
         })
         .then(response => response.json())
         .then(data => {
+          const responseTime = Date.now() - requestStartTime;
+          updatePerformanceMetrics(responseTime);
+          
           if (data.success) {
             updateFaces(data.faces, scale);
             updateBanner(data.banner);
@@ -1407,7 +1592,7 @@ INDEX_HTML = """
           console.error('Recognition error:', error);
         })
         .finally(() => { inFlight = false; });
-      }, 'image/jpeg', 0.6);
+      }, 'image/jpeg', 0.4);  // Reduced quality from 0.6 to 0.4 for faster upload
 
       if (isProcessing) {
         setTimeout(processFrame, 200);
@@ -1465,6 +1650,30 @@ INDEX_HTML = """
       } else {
         cooldownDisplay.classList.add('hidden');
       }
+    }
+    
+    function updatePerformanceMetrics(responseTime) {
+      performanceMetrics.requestCount++;
+      performanceMetrics.avgResponseTime = (performanceMetrics.avgResponseTime * (performanceMetrics.requestCount - 1) + responseTime) / performanceMetrics.requestCount;
+      
+      if (responseTime > 1000) {  // Consider > 1 second as slow
+        performanceMetrics.slowRequests++;
+      }
+      
+      // Adjust processing interval based on performance
+      if (performanceMetrics.requestCount > 10) {  // After 10 requests, start adjusting
+        const slowRequestRatio = performanceMetrics.slowRequests / performanceMetrics.requestCount;
+        
+        if (slowRequestRatio > 0.3) {  // If more than 30% are slow
+          PROCESS_INTERVAL = Math.min(PROCESS_INTERVAL + 10, 100);  // Increase interval
+          console.log(`[PERF] Performance degraded, increasing interval to ${PROCESS_INTERVAL}ms`);
+        } else if (slowRequestRatio < 0.1 && performanceMetrics.avgResponseTime < 500) {  // If less than 10% slow and avg < 500ms
+          PROCESS_INTERVAL = Math.max(PROCESS_INTERVAL - 5, 20);  // Decrease interval
+          console.log(`[PERF] Performance good, decreasing interval to ${PROCESS_INTERVAL}ms`);
+        }
+      }
+      
+      console.log(`[PERF] Response time: ${responseTime}ms, Avg: ${performanceMetrics.avgResponseTime.toFixed(1)}ms, Slow: ${performanceMetrics.slowRequests}/${performanceMetrics.requestCount}`);
     }
 
     function smoothFaces(prev, curr) {
@@ -1719,16 +1928,21 @@ def update_door_id():
         from flask import request
         data = request.get_json()
         door_id = data.get('door_id')
+        device_id = data.get('device_id')  # Get device identifier
         
         if not door_id:
             return {"success": False, "error": "Door ID is required"}
         
-        # Update global door ID
-        global GYM_DOOR_ID
-        GYM_DOOR_ID = door_id
+        # Generate device ID if not provided (using IP + User Agent)
+        if not device_id:
+            device_id = f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}"
         
-        print(f"[DOOR] Door ID updated to: {door_id}")
-        return {"success": True, "door_id": door_id}
+        # Store door ID per device
+        device_door_ids[device_id] = door_id
+        
+        print(f"[DOOR] Device {device_id} door ID updated to: {door_id}")
+        print(f"[DOOR] Current device door IDs: {device_door_ids}")
+        return {"success": True, "door_id": door_id, "device_id": device_id}
         
     except Exception as e:
         print(f"[DOOR] Error updating door ID: {e}")
@@ -1754,6 +1968,15 @@ def recognize():
         if frame_bgr is None:
             return {"success": False, "error": "Invalid image"}
         
+        # Resize image for faster processing if too large
+        height, width = frame_bgr.shape[:2]
+        if width > 640:  # If image is larger than 640px, resize it
+            scale = 640 / width
+            new_width = 640
+            new_height = int(height * scale)
+            frame_bgr = cv2.resize(frame_bgr, (new_width, new_height))
+            print(f"[PERF] Resized image from {width}x{height} to {new_width}x{new_height}")
+        
         # Convert to RGB for face detection
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         
@@ -1767,8 +1990,8 @@ def recognize():
         if not known_encs:
             return {"success": True, "faces": [], "debug": "No known encodings loaded"}
         
-        # Detect faces
-        boxes = face_recognition.face_locations(rgb, model="hog")
+        # Detect faces with faster model
+        boxes = face_recognition.face_locations(rgb, model="hog", number_of_times_to_upsample=0)
         
         if not boxes:
             return {"success": True, "faces": [], "debug": "No faces detected"}
@@ -1805,20 +2028,28 @@ def recognize():
         
         # Process gym gate if member is recognized
         if member_id and confidence <= TOLERANCE:
-            # Check cooldown first
-            if recognizer.is_in_cooldown():
-                cooldown_remaining = recognizer.get_cooldown_remaining()
-                print(f"[GYM] ⏳ Cooldown active: {cooldown_remaining:.1f}s remaining")
+            # Get device ID for cooldown check
+            device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
+            
+            # Check cooldown for this specific device
+            if recognizer.is_in_cooldown(device_id):
+                cooldown_remaining = recognizer.get_cooldown_remaining(device_id)
+                print(f"[GYM] ⏳ Device {device_id} cooldown active: {cooldown_remaining:.1f}s remaining")
                 # Don't add cooldown to face data, it will be shown on screen
             else:
                 # Get gym_member_id for API call
                 gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
                 if gym_member_id:
-                    gym_result = process_member_detection(gym_member_id, name)
+                    # Get device-specific door ID
+                    current_door_id = device_door_ids.get(device_id, GYM_DOOR_ID)
+                    
+                    print(f"[GYM] Using door ID {current_door_id} for device {device_id}")
+                    
+                    gym_result = process_member_detection_with_door(gym_member_id, name, current_door_id)
                     if gym_result["success"]:
                         print(f"[GYM] ✅ {gym_result['message']}")
-                        # Mark successful login to start cooldown
-                        recognizer.set_successful_login(name)
+                        # Mark successful login to start cooldown for this device only
+                        recognizer.set_successful_login(name, device_id)
                     else:
                         print(f"[GYM] ❌ {gym_result['error']}")
                 else:
@@ -1846,28 +2077,34 @@ def recognize():
                 "member_id": member_id
             })
         
-        # Add banner info if there was a recent successful login
+        # Get device ID for banner and cooldown info
+        device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
+        
+        # Add banner info if there was a recent successful login for this device
         banner_info = None
-        if recognizer.last_successful_member:
+        last_successful_member = recognizer.get_last_successful_member(device_id)
+        if last_successful_member:
             # Show banner for 2 seconds after successful login
-            time_since_login = time.time() - recognizer.last_successful_login
+            device_data = recognizer.device_cooldowns.get(device_id, {})
+            last_login_time = device_data.get('last_login', 0)
+            time_since_login = time.time() - last_login_time
             if time_since_login < 2.0:  # Show banner for 2 seconds
                 banner_info = {
                     "show": True,
                     "message": f"Access Granted",
-                    "name": recognizer.last_successful_member
+                    "name": last_successful_member
                 }
-                print(f"[BANNER] Showing banner for {recognizer.last_successful_member} ({time_since_login:.1f}s ago)")
+                print(f"[BANNER] Device {device_id} showing banner for {last_successful_member} ({time_since_login:.1f}s ago)")
         
-        # Add cooldown info if system is in cooldown
+        # Add cooldown info if this device is in cooldown
         cooldown_info = None
-        if recognizer.is_in_cooldown():
-            cooldown_remaining = recognizer.get_cooldown_remaining()
+        if recognizer.is_in_cooldown(device_id):
+            cooldown_remaining = recognizer.get_cooldown_remaining(device_id)
             cooldown_info = {
                 "show": True,
                 "remaining": cooldown_remaining
             }
-            print(f"[COOLDOWN] Showing cooldown: {cooldown_remaining:.1f}s remaining")
+            print(f"[COOLDOWN] Device {device_id} showing cooldown: {cooldown_remaining:.1f}s remaining")
         
         return {
             "success": True, 
@@ -1886,6 +2123,77 @@ def reload_route():
     threading.Thread(target=recognizer.reload, daemon=True).start()
     return "Reload encodings dipicu. Tunggu 1-3 detik lalu refresh stream."
 
+@app.route("/regenerate_enc")
+def regenerate_enc_route():
+    """
+    Manually trigger regeneration of missing encodings
+    """
+    try:
+        result = regenerate_missing_encodings()
+        if result["success"]:
+            return {
+                "success": True,
+                "message": f"ENC regeneration completed. Success: {result['success_count']}, Errors: {result['error_count']}",
+                "success_count": result["success_count"],
+                "error_count": result["error_count"]
+            }
+        else:
+            return {"success": False, "error": result["error"]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.route("/enc_status")
+def enc_status_route():
+    """
+    Check ENC status for all members
+    """
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Count members with valid encodings
+        cur.execute("""
+            SELECT COUNT(*) as total_members
+            FROM member m
+            JOIN member_file f ON f.member_id = m.id
+            WHERE m.status = 1
+              AND (f.status IS NULL OR f.status = 1)
+              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
+              AND f.title = 'Profile2'
+        """)
+        total_members = cur.fetchone()[0]
+        
+        # Count members with valid encodings
+        cur.execute("""
+            SELECT COUNT(*) as members_with_enc
+            FROM member m
+            JOIN member_file f ON f.member_id = m.id
+            WHERE m.status = 1
+              AND (f.status IS NULL OR f.status = 1)
+              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
+              AND f.title = 'Profile2'
+              AND m.enc IS NOT NULL 
+              AND LENGTH(m.enc) = 1024
+        """)
+        members_with_enc = cur.fetchone()[0]
+        
+        # Count members without encodings
+        members_without_enc = total_members - members_with_enc
+        
+        cur.close()
+        conn.close()
+        
+        return {
+            "success": True,
+            "total_members": total_members,
+            "members_with_enc": members_with_enc,
+            "members_without_enc": members_without_enc,
+            "enc_percentage": round((members_with_enc / total_members * 100) if total_members > 0 else 0, 2)
+        }
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.route("/health")
 def health():
     with recognizer.lock:
@@ -1900,8 +2208,22 @@ def health():
 
 # ===================== Main =====================
 if __name__ == "__main__":
+    # Ensure ENC field exists and regenerate missing encodings
+    print("[STARTUP] Ensuring ENC field exists...")
+    add_enc_field_to_member_table()
+    
+    print("[STARTUP] Checking for missing encodings...")
+    enc_status = regenerate_missing_encodings()
+    if enc_status["success"]:
+        print(f"[STARTUP] ENC regeneration: {enc_status['success_count']} success, {enc_status['error_count']} errors")
+    else:
+        print(f"[STARTUP] ENC regeneration failed: {enc_status['error']}")
+    
     # Initial load
+    print("[STARTUP] Loading encodings...")
     recognizer.reload()
+    
+    print("[STARTUP] Server starting...")
     # Jalankan Flask
-    # Akses di: http://127.0.0.1:5000/
+    # Akses di: http://127.0.0.1:8001/
     app.run(host="0.0.0.0", port=8001, debug=True, threaded=True)
