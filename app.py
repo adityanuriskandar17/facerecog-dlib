@@ -446,12 +446,127 @@ class Recognizer:
         self.last_reload = 0
         # Cooldown per device
         self.device_cooldowns: Dict[str, Dict] = {}  # device_id -> {last_login: timestamp, member: name}
-        self.cooldown_duration = 3  # 10 seconds cooldown
+        self.cooldown_duration = 60  # 10 seconds cooldown
+        # Track loaded member IDs for new data detection
+        self.loaded_member_ids: set = set()
+        # Auto-check interval for new data (seconds)
+        self.auto_check_interval = 10  # Check every 10 seconds
+        self.last_auto_check = 0
 
     def reload(self):
         with self.lock:
             self.known_encodings, self.known_names, self.known_ids, self.gym_member_id_mapping = build_known_encodings()
             self.last_reload = time.time()
+            # Update loaded member IDs
+            self.loaded_member_ids = set(self.known_ids)
+            print(f"[RELOAD] Loaded {len(self.loaded_member_ids)} member encodings")
+    
+    def check_for_new_members(self):
+        """
+        Check for new members that don't have encodings yet
+        """
+        current_time = time.time()
+        if current_time - self.last_auto_check < self.auto_check_interval:
+            return
+        
+        self.last_auto_check = current_time
+        
+        try:
+            print(f"[AUTO-CHECK] Checking for new members... (loaded: {len(self.loaded_member_ids)})")
+            
+            # Get all active members with images
+            sources = fetch_member_images()
+            current_member_ids = {member_id for member_id, _, _, _ in sources}
+            
+            print(f"[AUTO-CHECK] Current DB members: {len(current_member_ids)}")
+            print(f"[AUTO-CHECK] Loaded members: {len(self.loaded_member_ids)}")
+            
+            # Find new members
+            new_member_ids = current_member_ids - self.loaded_member_ids
+            
+            if new_member_ids:
+                print(f"[AUTO-CHECK] Found {len(new_member_ids)} new members: {new_member_ids}")
+                self.process_new_members(new_member_ids, sources)
+            else:
+                print(f"[AUTO-CHECK] No new members found")
+                
+        except Exception as e:
+            print(f"[AUTO-CHECK] Error checking for new members: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def process_new_members(self, new_member_ids: set, all_sources: List[Tuple[int, int, str, str]]):
+        """
+        Process new members and generate their encodings
+        """
+        new_encodings = []
+        new_names = []
+        new_member_ids_list = []
+        new_gym_member_id_mapping = {}
+        processed_count = 0
+        error_count = 0
+        
+        print(f"[AUTO-CHECK] Processing {len(new_member_ids)} new members...")
+        
+        for member_id, gym_member_id, first_name, full_url in all_sources:
+            if member_id not in new_member_ids:
+                continue
+                
+            try:
+                # Check if encoding already exists in DB
+                stored_encoding = load_encoding_from_db(member_id)
+                
+                if stored_encoding is not None:
+                    # Use existing encoding
+                    new_encodings.append(stored_encoding)
+                    new_names.append(first_name.strip() or f"Member_{member_id}")
+                    new_member_ids_list.append(member_id)
+                    new_gym_member_id_mapping[member_id] = gym_member_id
+                    print(f"[AUTO-CHECK] Loaded existing encoding for member_id={member_id}")
+                else:
+                    # Generate new encoding
+                    print(f"[AUTO-CHECK] Generating new encoding for member_id={member_id}")
+                    img = url_to_rgb_array(full_url)
+                    boxes = face_recognition.face_locations(img, model="hog")
+                    
+                    if not boxes:
+                        print(f"[AUTO-CHECK] No face found for member_id={member_id}")
+                        error_count += 1
+                        continue
+                        
+                    encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
+                    if not encoding:
+                        print(f"[AUTO-CHECK] Failed to generate encoding for member_id={member_id}")
+                        error_count += 1
+                        continue
+                        
+                    # Save to database
+                    save_encoding_to_db(member_id, encoding[0])
+                    
+                    new_encodings.append(encoding[0])
+                    new_names.append(first_name.strip() or f"Member_{member_id}")
+                    new_member_ids_list.append(member_id)
+                    new_gym_member_id_mapping[member_id] = gym_member_id
+                    print(f"[AUTO-CHECK] Generated & saved encoding for member_id={member_id}")
+                
+                processed_count += 1
+                
+            except Exception as e:
+                print(f"[AUTO-CHECK] Error processing member_id={member_id}: {e}")
+                error_count += 1
+        
+        # Add new encodings to existing ones
+        if new_encodings:
+            with self.lock:
+                self.known_encodings.extend(new_encodings)
+                self.known_names.extend(new_names)
+                self.known_ids.extend(new_member_ids_list)
+                self.gym_member_id_mapping.update(new_gym_member_id_mapping)
+                self.loaded_member_ids.update(new_member_ids)
+            
+            print(f"[AUTO-CHECK] Successfully added {processed_count} new encodings. Errors: {error_count}")
+        else:
+            print(f"[AUTO-CHECK] No new encodings added. Errors: {error_count}")
     
     def is_in_cooldown(self, device_id: str = None):
         """Check if system is in cooldown period for specific device"""
@@ -499,6 +614,9 @@ class Recognizer:
         """
         Detect & recognize faces in BGR frame. Draw boxes & labels.
         """
+        # Check for new members periodically
+        self.check_for_new_members()
+        
         with self.lock:
             known_encs = self.known_encodings
             known_names = self.known_names
@@ -537,6 +655,23 @@ class Recognizer:
         return frame_bgr
 
 recognizer = Recognizer()
+
+def background_auto_check():
+    """
+    Background thread untuk auto-check data baru
+    """
+    while True:
+        try:
+            recognizer.check_for_new_members()
+            time.sleep(5)  # Check every 5 seconds (faster than interval)
+        except Exception as e:
+            print(f"[BACKGROUND] Error in auto-check: {e}")
+            time.sleep(30)  # Wait longer on error
+
+# Start background thread
+auto_check_thread = threading.Thread(target=background_auto_check, daemon=True)
+auto_check_thread.start()
+print("[BACKGROUND] Auto-check thread started")
 
 # ===================== Flask App =====================
 app = Flask(__name__)
@@ -2188,9 +2323,83 @@ def enc_status_route():
             "total_members": total_members,
             "members_with_enc": members_with_enc,
             "members_without_enc": members_without_enc,
-            "enc_percentage": round((members_with_enc / total_members * 100) if total_members > 0 else 0, 2)
+            "enc_percentage": round((members_with_enc / total_members * 100) if total_members > 0 else 0, 2),
+            "loaded_members": len(recognizer.loaded_member_ids),
+            "auto_check_interval": recognizer.auto_check_interval
         }
         
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.route("/check_new_members")
+def check_new_members_route():
+    """
+    Manually trigger check for new members
+    """
+    try:
+        # Force check by resetting last check time
+        recognizer.last_auto_check = 0
+        recognizer.check_for_new_members()
+        
+        return {
+            "success": True,
+            "message": "New members check completed",
+            "loaded_members": len(recognizer.loaded_member_ids)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.route("/debug_members")
+def debug_members_route():
+    """
+    Debug endpoint to see current member status
+    """
+    try:
+        # Get current members from DB
+        sources = fetch_member_images()
+        current_member_ids = {member_id for member_id, _, _, _ in sources}
+        
+        # Get loaded members
+        loaded_member_ids = recognizer.loaded_member_ids
+        
+        # Find differences
+        new_members = current_member_ids - loaded_member_ids
+        missing_members = loaded_member_ids - current_member_ids
+        
+        return {
+            "success": True,
+            "current_db_members": list(current_member_ids),
+            "loaded_members": list(loaded_member_ids),
+            "new_members": list(new_members),
+            "missing_members": list(missing_members),
+            "total_db": len(current_member_ids),
+            "total_loaded": len(loaded_member_ids),
+            "auto_check_interval": recognizer.auto_check_interval,
+            "last_auto_check": recognizer.last_auto_check
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.route("/set_auto_check_interval", methods=['POST'])
+def set_auto_check_interval_route():
+    """
+    Set auto-check interval for new members (in seconds)
+    """
+    try:
+        from flask import request
+        data = request.get_json()
+        interval = data.get('interval', 30)
+        
+        if not isinstance(interval, (int, float)) or interval < 10:
+            return {"success": False, "error": "Interval must be a number >= 10 seconds"}
+        
+        recognizer.auto_check_interval = int(interval)
+        
+        return {
+            "success": True,
+            "message": f"Auto-check interval set to {interval} seconds",
+            "new_interval": recognizer.auto_check_interval
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -2223,6 +2432,8 @@ if __name__ == "__main__":
     print("[STARTUP] Loading encodings...")
     recognizer.reload()
     
+    print(f"[STARTUP] Auto-check interval: {recognizer.auto_check_interval} seconds")
+    print(f"[STARTUP] Loaded {len(recognizer.loaded_member_ids)} member encodings")
     print("[STARTUP] Server starting...")
     # Jalankan Flask
     # Akses di: http://127.0.0.1:8001/
