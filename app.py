@@ -1304,7 +1304,7 @@ INDEX_HTML = """
   <div class="container">
     <div class="header">
       <h1>Face Recognition FTL GYM</h1>
-      <p style="color: var(--text-secondary); margin: 0;">Powered by Dlib & face_recognition</p>
+      <p style="color: var(--text-secondary); margin: 0;">Powered by Horrizon</p>
   </div>
     
     <div class="controls">
