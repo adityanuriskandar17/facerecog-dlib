@@ -2009,17 +2009,37 @@ INDEX_HTML = """
                 sourceY = (video.videoHeight - sourceHeight) / 2;
               }
               
+              // Save context state
+              ctx.save();
+              // Flip horizontally by scaling and translating
+              ctx.scale(-1, 1);
+              ctx.translate(-canvas.width, 0);
+              // Draw video with horizontal flip
               ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, destX, destY, destWidth, destHeight);
-              console.log('[DRAW] Mobile video frame drawn with aspect ratio preservation');
+              // Restore context state
+              ctx.restore();
+              console.log('[DRAW] Mobile video frame drawn with aspect ratio preservation and horizontal flip');
             } else {
+              // Save context state
+              ctx.save();
+              // Flip horizontally by scaling and translating
+              ctx.scale(-1, 1);
+              ctx.translate(-canvas.width, 0);
+              // Draw video with horizontal flip
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              console.log('[DRAW] Desktop video frame drawn successfully');
+              // Restore context state
+              ctx.restore();
+              console.log('[DRAW] Desktop video frame drawn successfully with horizontal flip');
             }
           } catch (drawError) {
             console.error('[DRAW] drawImage failed:', drawError);
-            // Fallback: try with source dimensions
+            // Fallback: try with source dimensions and horizontal flip
+            ctx.save();
+            ctx.scale(-1, 1);
+            ctx.translate(-canvas.width, 0);
             ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, canvas.width, canvas.height);
-            console.log('[DRAW] Video frame drawn with fallback method');
+            ctx.restore();
+            console.log('[DRAW] Video frame drawn with fallback method and horizontal flip');
           }
         } else {
           console.log('[DRAW] Video not ready, skipping draw');
@@ -2045,7 +2065,8 @@ INDEX_HTML = """
       
       for (const face of showFaces) {
         const { x, y, width, height, name, confidence, cooldown, cooldown_remaining } = face;
-        const dx = Math.round(x * sx);
+        // Adjust coordinates for horizontal flip
+        const dx = Math.round((video.videoWidth - x - width) * sx);
         const dy = Math.round(y * sy);
         const dw = Math.round(width * sx);
         const dh = Math.round(height * sy);
@@ -2069,9 +2090,9 @@ INDEX_HTML = """
         // Display different text based on state
         if (cooldown) {
           // Don't show cooldown in bounding box, it will be shown on screen
-          ctx.fillText(`${name} (${confidence.toFixed(2)})`, dx + 5, dy + dh - 8);
+          ctx.fillText(`${name}`, dx + 5, dy + dh - 8);
         } else {
-          ctx.fillText(`${name} (${confidence.toFixed(2)})`, dx + 5, dy + dh - 8);
+          ctx.fillText(`${name}`, dx + 5, dy + dh - 8);
         }
       }
       requestAnimationFrame(drawDisplay);
