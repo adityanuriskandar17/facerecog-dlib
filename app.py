@@ -496,7 +496,8 @@ class Recognizer:
         self.last_reload = 0
         # Cooldown per device
         self.device_cooldowns: Dict[str, Dict] = {}  # device_id -> {last_login: timestamp, member: name}
-        self.cooldown_duration = 5  # 10 seconds cooldown
+        self.cooldown_duration = 5
+        self.denied_cooldown_duration = 5
         # Track loaded member IDs for new data detection
         self.loaded_member_ids: set = set()
         # Auto-check interval for new data (seconds)
@@ -655,6 +656,35 @@ class Recognizer:
             'member': member_name
         }
         print(f"[COOLDOWN] Device {device_id} cooldown set for {member_name}")
+    
+    def set_denied(self, member_name: str, reason: str = "Access denied", device_id: str = None):
+        if not device_id:
+            return
+        current_time = time.time()
+        entry = self.device_cooldowns.get(device_id, {})
+        entry['last_denied'] = current_time
+        entry['denied_member'] = member_name
+        entry['denied_reason'] = reason
+        self.device_cooldowns[device_id] = entry
+        print(f"[DENIED] Device {device_id} denied set for {member_name}: {reason}")
+    
+    def is_in_denied_cooldown(self, device_id: str = None) -> bool:
+        if not device_id:
+            return False
+        entry = self.device_cooldowns.get(device_id)
+        if not entry:
+            return False
+        last_denied = entry.get('last_denied', 0)
+        return (time.time() - last_denied) < self.denied_cooldown_duration
+    
+    def get_denied_remaining(self, device_id: str = None) -> float:
+        if not device_id:
+            return 0.0
+        entry = self.device_cooldowns.get(device_id, {})
+        last_denied = entry.get('last_denied', 0)
+        elapsed = time.time() - last_denied
+        remaining = self.denied_cooldown_duration - elapsed
+        return max(0.0, remaining)
     
     def get_last_successful_member(self, device_id: str = None):
         """Get last successful member name for specific device"""
@@ -2280,6 +2310,31 @@ def recognize():
         
         # Get device ID for cooldown check
         device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
+
+        # Short-circuit if device is in denied cooldown window
+        if recognizer.is_in_denied_cooldown(device_id):
+            denied_remaining = recognizer.get_denied_remaining(device_id)
+            faces.append({
+                "x": int(left),
+                "y": int(top),
+                "width": int(right - left),
+                "height": int(bottom - top),
+                "name": "Access Denied",
+                "confidence": confidence,
+            })
+            return {
+                "success": True,
+                "faces": faces,
+                "cooldown": None,
+                "popup": {
+                    "show": True,
+                    "style": "DENIED",
+                    "member_name": name,
+                    "member_id": None,
+                    "message": f"Please wait {denied_remaining:.1f}s before retry"
+                },
+                "debug": "Denied cooldown active"
+            }
         
         # Always add face data for display (bounding box should always show)
         face_data = {
@@ -2318,6 +2373,8 @@ def recognize():
                         recognizer.set_successful_login(name, device_id)
                     else:
                         print(f"[GYM] ❌ {gym_result['error']}")
+                        # Set denied cooldown to prevent immediate re-grant on next frame
+                        recognizer.set_denied(name, gym_result.get('error') or 'Access denied', device_id)
                     
                     # Get popup info from gym result and add cooldown duration
                     popup_info = gym_result.get("popup")
@@ -2333,7 +2390,7 @@ def recognize():
                         "show": True,
                         "style": "GRANTED",
                         "member_name": name,
-                        "member_id": member_id,
+                        "member_id": recognizer.gym_member_id_mapping.get(member_id),
                         "message": f"Access Granted for {name}"
                     }
         
