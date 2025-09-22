@@ -1257,39 +1257,6 @@ INDEX_HTML = """
       line-height: 1.6;
     }
     
-    .door-selector {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      padding: 8px 12px;
-    }
-    
-    .door-selector label {
-      font-size: 14px;
-      font-weight: 500;
-      color: var(--text-primary);
-      margin: 0;
-    }
-    
-    .door-selector select {
-      background: var(--bg-primary);
-      border: 1px solid var(--border-color);
-      border-radius: 4px;
-      padding: 6px 8px;
-      font-size: 14px;
-      color: var(--text-primary);
-      cursor: pointer;
-      min-width: 200px;
-    }
-    
-    .door-selector select:focus {
-      outline: none;
-      border-color: var(--accent-color);
-      box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
-    }
     
     @media (max-width: 1024px) {
       .container { padding: 15px; }
@@ -1317,14 +1284,7 @@ INDEX_HTML = """
         gap: 8px; 
         margin-bottom: 15px;
       }
-      .door-selector {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 5px;
-      }
-      .door-selector select {
-        min-width: 100%;
-      }
+      
     }
     
     @media (max-width: 480px) {
@@ -1388,16 +1348,7 @@ INDEX_HTML = """
         <span>⏹️</span> Stop Camera
       </button>
       
-      <div class="door-selector">
-        <label for="doorSelect">Cabang:</label>
-        <select id="doorSelect" onchange="updateDoorId()">
-          <option value="">Pilih Cabang</option>
-          <option value="19456">FTL - Center / Door 1</option>
-          <option value="19418">FTL - Center / Reception - CT</option>
-          <option value="19429">FTL - Benhil / Reception - BH</option>
-          <option value="4">FTL - Tebet / Reception - TB</option>
-        </select>
-      </div>
+      
       
       <button class="btn btn-secondary" onclick="toggleFullscreen()" title="Toggle Fullscreen">
         <span id="fullscreen-icon">⛶</span>
@@ -1470,45 +1421,30 @@ INDEX_HTML = """
     }
     
     // Door ID functionality
-    function updateDoorId() {
-      const doorSelect = document.getElementById('doorSelect');
-      const selectedDoorId = doorSelect.value;
+    function setDoorIdParam(doorId) {
       const deviceId = getDeviceId();
-      
-      // If no door selected, don't send to server
-      if (!selectedDoorId) {
-        console.log('[DOOR] No door selected');
+      if (!doorId) {
+        console.log('[DOOR] No door id provided');
         return;
       }
-      
-      console.log(`[DOOR] Updating door ID for device ${deviceId} to: ${selectedDoorId}`);
-      
-      // Send door ID to server with device ID
+      console.log(`[DOOR] Setting door ID for device ${deviceId} to: ${doorId}`);
       fetch('/update_door_id', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Device-ID': deviceId
         },
-        body: JSON.stringify({ 
-          door_id: selectedDoorId,
-          device_id: deviceId
-        })
+        body: JSON.stringify({ door_id: doorId, device_id: deviceId })
       })
-      .then(response => response.json())
+      .then(r => r.json())
       .then(data => {
         if (data.success) {
-          console.log(`[DOOR] Device ${deviceId} door ID updated to: ${selectedDoorId}`);
-          updateStatus(`Cabang dipilih: ${doorSelect.options[doorSelect.selectedIndex].text}`, 'success');
+          updateStatus(`Door set: ${doorId}`, 'success');
         } else {
-          console.error('[DOOR] Failed to update door ID:', data.error);
-          updateStatus(`Failed to update door ID: ${data.error}`, 'error');
+          updateStatus(`Failed set door: ${data.error}`, 'error');
         }
       })
-      .catch(error => {
-        console.error('[DOOR] Error updating door ID:', error);
-        updateStatus(`Error updating door ID: ${error}`, 'error');
-      });
+      .catch(err => updateStatus(`Error set door: ${err}`, 'error'));
     }
     
     // Fullscreen functionality
@@ -1626,10 +1562,11 @@ INDEX_HTML = """
         themeIcon.textContent = '☀️';
       }
       
-      // Reset door selection to default on page load
-      const doorSelect = document.getElementById('doorSelect');
-      if (doorSelect) {
-        doorSelect.value = '';
+      const params = new URLSearchParams(window.location.search);
+      const paramDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+      if (paramDoorId) {
+        localStorage.setItem('doorId', paramDoorId);
+        setDoorIdParam(paramDoorId);
       }
     });
 
@@ -1658,15 +1595,15 @@ INDEX_HTML = """
     }
 
     async function startCamera() {
-      // Check if door ID is selected
-      const doorSelect = document.getElementById('doorSelect');
-      if (!doorSelect.value) {
-        alert('Pilih Cabang terlebih dahulu!');
-        updateStatus('Silakan pilih cabang sebelum memulai kamera', 'error');
+      // Ensure door ID is set for this device via URL param/localStorage
+      const savedDoorId = localStorage.getItem('doorId');
+      if (!savedDoorId) {
+        updateStatus('Door ID belum diset. Tambahkan ?doorid=XXXX pada URL', 'error');
+        alert('Door ID belum diset. Tambahkan ?doorid=XXXX pada URL');
         return;
       }
       
-      // Ensure door ID is set for this device
+      // Proceed to start camera
       const deviceId = getDeviceId();
       console.log(`[CAMERA] Starting camera for device: ${deviceId}`);
       
