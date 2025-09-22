@@ -19,11 +19,11 @@ import face_recognition  # built on top of dlib
 # ===================== Config =====================
 load_dotenv()
 
-MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
-MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
-MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "deepface")
-MYSQL_USER = os.getenv("MYSQL_USER", "root")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_HOST = os.getenv("DB_HOST", "")
+MYSQL_PORT = int(os.getenv("DB_PORT", ""))
+MYSQL_DATABASE = os.getenv("DB_NAME", "")
+MYSQL_USER = os.getenv("DB_USER", "")
+MYSQL_PASSWORD = os.getenv("DB_PASSWORD", "")
 
 TOLERANCE = 0.45  # lebih ketat dari default 0.6
 
@@ -31,10 +31,10 @@ TOLERANCE = 0.45  # lebih ketat dari default 0.6
 REQUEST_TIMEOUT = 15
 
 # Gym API Configuration
-GYM_API_KEY = os.getenv("GYM_API_KEY", "")
-GYM_DOOR_ID = os.getenv("GYM_DOOR_ID", "19456")
-GYM_LOGIN_URL = os.getenv("GYM_LOGIN_URL", "")
-GYM_GATE_URL = os.getenv("GYM_GATE_URL", "")
+GYM_API_KEY = os.getenv("API_KEY", "")
+GYM_DOOR_ID = os.getenv("DOOR_", "19456")
+GYM_LOGIN_URL = os.getenv("LOGIN_URL", "")
+GYM_GATE_URL = os.getenv("CHECKIN_URL", "")
 
 # Store door IDs per session/device
 device_door_ids = {}
