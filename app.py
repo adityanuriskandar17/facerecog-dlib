@@ -753,10 +753,7 @@ def background_auto_check():
             print(f"[BACKGROUND] Error in auto-check: {e}")
             time.sleep(30)  # Wait longer on error
 
-# Start background thread
-auto_check_thread = threading.Thread(target=background_auto_check, daemon=True)
-auto_check_thread.start()
-print("[BACKGROUND] Auto-check thread started")
+# Background thread will be started after initial load in __main__
 
 # ===================== Flask App =====================
 app = Flask(__name__)
@@ -2537,6 +2534,10 @@ if __name__ == "__main__":
     
     print(f"[STARTUP] Auto-check interval: {recognizer.auto_check_interval} seconds")
     print(f"[STARTUP] Loaded {len(recognizer.loaded_member_ids)} member encodings")
+    # Start background auto-check thread after initialization completes
+    auto_check_thread = threading.Thread(target=background_auto_check, daemon=True)
+    auto_check_thread.start()
+    print("[BACKGROUND] Auto-check thread started")
     print("[STARTUP] Server starting...")
     # Jalankan Flask
     # Akses di: http://127.0.0.1:8001/
