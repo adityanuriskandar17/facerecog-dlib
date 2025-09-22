@@ -394,10 +394,43 @@ def gym_open_gate_with_door(token: str, door_id: str) -> dict:
         data = response.json()
         if data.get("error") is None:
             print(f"[GYM] Gate {door_id} opened successfully")
-            return {"success": True, "message": f"Gate {door_id} opened successfully"}
+            result = data.get("result", {}).get("response", {})
+            popup_style = result.get("popup_style", "GRANTED")
+            member_name = result.get("member_name", "Unknown Member")
+            member_id = result.get("member_id", "N/A")
+            message = result.get("message", f"Gate {door_id} opened successfully")
+            
+            return {
+                "success": True, 
+                "message": message,
+                "popup": {
+                    "show": True,
+                    "style": popup_style,
+                    "member_name": member_name,
+                    "member_id": member_id,
+                    "message": message,
+                    "cooldown_duration": 10  # 10 seconds cooldown
+                }
+            }
         else:
             print(f"[GYM] Gate {door_id} open failed: {data.get('error', 'Unknown error')}")
-            return {"success": False, "error": data.get("error", "Unknown error")}
+            result = data.get("result", {}).get("response", {})
+            popup_style = result.get("popup_style", "DENIED")
+            member_name = result.get("member_name", "Unknown Member")
+            member_id = result.get("member_id", "N/A")
+            message = result.get("message", f"Gate {door_id} access denied")
+            
+            return {
+                "success": False, 
+                "error": data.get("error", "Unknown error"),
+                "popup": {
+                    "show": True,
+                    "style": popup_style,
+                    "member_name": member_name,
+                    "member_id": member_id,
+                    "message": message
+                }
+            }
             
     except requests.exceptions.RequestException as e:
         print(f"[GYM] Gate {door_id} open request failed: {e}")
@@ -437,10 +470,20 @@ def process_member_detection_with_door(member_id: int, member_name: str, door_id
     
     # Step 2: Open gate using token with specific door ID
     gate_result = gym_open_gate_with_door(login_result["token"], door_id)
-    if not gate_result["success"]:
-        return {"success": False, "error": f"Gate open failed: {gate_result['error']}"}
     
-    return {"success": True, "message": f"Welcome {member_name}! Gate {door_id} opened successfully."}
+    # Return the result with popup information
+    if gate_result["success"]:
+        return {
+            "success": True, 
+            "message": gate_result["message"],
+            "popup": gate_result.get("popup")
+        }
+    else:
+        return {
+            "success": False, 
+            "error": gate_result["error"],
+            "popup": gate_result.get("popup")
+        }
 
 # ===================== Video / Recognition =====================
 class Recognizer:
@@ -453,7 +496,7 @@ class Recognizer:
         self.last_reload = 0
         # Cooldown per device
         self.device_cooldowns: Dict[str, Dict] = {}  # device_id -> {last_login: timestamp, member: name}
-        self.cooldown_duration = 10  # 10 seconds cooldown
+        self.cooldown_duration = 5  # 10 seconds cooldown
         # Track loaded member IDs for new data detection
         self.loaded_member_ids: set = set()
         # Auto-check interval for new data (seconds)
@@ -856,23 +899,6 @@ INDEX_HTML = """
       max-height: 80vh;
     }
     
-    .banner {
-      position: absolute;
-      top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: linear-gradient(135deg, #10b981, #059669);
-      color: white;
-      padding: 15px 25px;
-      border-radius: 12px;
-      box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3);
-      z-index: 10;
-      animation: slideDown 0.5s ease-out;
-    }
-    
-    .banner.hidden {
-      display: none;
-    }
     
     .cooldown-display {
       position: absolute;
@@ -889,6 +915,91 @@ INDEX_HTML = """
     
     .cooldown-display.hidden {
       display: none;
+    }
+    
+    .popup-notification {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10000;
+      padding: 30px 40px;
+      border-radius: 20px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+      text-align: center;
+      font-weight: 700;
+      font-size: 24px;
+      color: white;
+      animation: popupSlideIn 0.5s ease-out;
+      min-width: 300px;
+      max-width: 500px;
+    }
+    
+    .popup-notification.granted {
+      background: linear-gradient(135deg, #10b981, #059669);
+      border: 3px solid #34d399;
+    }
+    
+    .popup-notification.denied {
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      border: 3px solid #f87171;
+    }
+    
+    .popup-notification.hidden {
+      display: none;
+    }
+    
+    .popup-icon {
+      font-size: 48px;
+      margin-bottom: 15px;
+      display: block;
+    }
+    
+    .popup-title {
+      font-size: 28px;
+      margin-bottom: 10px;
+      font-weight: 800;
+    }
+    
+    .popup-message {
+      font-size: 16px;
+      opacity: 0.9;
+      font-weight: 500;
+      line-height: 1.4;
+    }
+    
+    .popup-member-name {
+      font-size: 20px;
+      margin: 10px 0;
+      font-weight: 700;
+    }
+    
+    .popup-member-id {
+      font-size: 14px;
+      opacity: 0.8;
+      margin-top: 5px;
+    }
+    
+    @keyframes popupSlideIn {
+      from {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.8);
+      }
+      to {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+      }
+    }
+    
+    @keyframes popupSlideOut {
+      from {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+      }
+      to {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.8);
+      }
     }
     
     .cooldown-content {
@@ -930,42 +1041,6 @@ INDEX_HTML = """
       to { transform: rotate(360deg); }
     }
     
-    .banner-content {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    
-    .banner-icon {
-      font-size: 24px;
-    }
-    
-    .banner-text {
-      display: flex;
-      flex-direction: column;
-    }
-    
-    .banner-title {
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 2px;
-    }
-    
-    .banner-name {
-      font-size: 14px;
-      opacity: 0.9;
-    }
-    
-    @keyframes slideDown {
-      from {
-        opacity: 0;
-        transform: translateX(-50%) translateY(-20px);
-      }
-      to {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
-      }
-    }
     
     /* Fullscreen styles */
     .camera-container:fullscreen {
@@ -996,13 +1071,6 @@ INDEX_HTML = """
       max-height: none;
     }
     
-    .camera-container:fullscreen .banner {
-      position: absolute;
-      top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 10000;
-    }
     
     /* Fallback CSS fullscreen */
     .fullscreen-mode {
@@ -1052,13 +1120,6 @@ INDEX_HTML = """
       display: none;
     }
     
-    .fullscreen-mode .banner {
-      position: absolute;
-      top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 10000;
-    }
     
     .fullscreen-exit {
       position: fixed;
@@ -1108,13 +1169,6 @@ INDEX_HTML = """
       max-height: none;
     }
     
-    .camera-container:-webkit-full-screen .banner {
-      position: absolute;
-      top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 10000;
-    }
     
     #video {
       display: none;
@@ -1252,17 +1306,6 @@ INDEX_HTML = """
         max-height: 65vh;
         min-height: 250px;
       }
-      .banner {
-        top: 10px;
-        padding: 10px 15px;
-        font-size: 14px;
-      }
-      .banner-title {
-        font-size: 16px;
-      }
-      .banner-name {
-        font-size: 12px;
-      }
     }
     
     /* Mobile landscape orientation */
@@ -1334,6 +1377,7 @@ INDEX_HTML = """
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark Mode">
         <span id="theme-icon">🌙</span>
       </button>
+      
     </div>
     
     <div id="status" class="status info">Click "Start Camera" to begin face recognition</div>
@@ -1342,15 +1386,6 @@ INDEX_HTML = """
       <div class="camera-wrapper">
         <video id="video" autoplay muted playsinline></video>
         <canvas id="canvas" width="960" height="720"></canvas>
-        <div id="banner" class="banner hidden">
-          <div class="banner-content">
-            <div class="banner-icon">✅</div>
-            <div class="banner-text">
-              <div class="banner-title">Access Granted</div>
-              <div class="banner-name">Nama: <span id="banner-name"></span></div>
-            </div>
-          </div>
-        </div>
         <div id="cooldown-display" class="cooldown-display hidden">
           <div class="cooldown-content">
             <div class="cooldown-icon">⏳</div>
@@ -1359,6 +1394,13 @@ INDEX_HTML = """
               <div class="cooldown-time"><span id="cooldown-time">0.0</span>s</div>
             </div>
           </div>
+        </div>
+        <div id="popup-notification" class="popup-notification hidden">
+          <div class="popup-icon" id="popup-icon">✅</div>
+          <div class="popup-title" id="popup-title">ACCESS GRANTED</div>
+          <div class="popup-member-name" id="popup-member-name">Member Name</div>
+          <div class="popup-member-id" id="popup-member-id">Member #123456</div>
+          <div class="popup-message" id="popup-message">Welcome to FTL Gym!</div>
         </div>
       </div>
     </div>
@@ -1575,6 +1617,10 @@ INDEX_HTML = """
     const SMOOTHING_ALPHA = 0.5;
     const workCanvas = document.createElement('canvas');
     const workCtx = workCanvas.getContext('2d');
+    
+    // Simple popup control
+    let currentPopupTimeout = null;
+    
 
     function updateStatus(message, type = 'info') {
       status.textContent = message;
@@ -1729,8 +1775,9 @@ INDEX_HTML = """
           
           if (data.success) {
             updateFaces(data.faces, scale);
-            updateBanner(data.banner);
             updateCooldownDisplay(data.cooldown);
+            console.log('[DEBUG] Received popup data:', data.popup);
+            showPopupNotification(data.popup);
           } else {
             console.error('Recognition failed:', data.error);
           }
@@ -1763,41 +1810,6 @@ INDEX_HTML = """
       lastFacesTime = Date.now();
     }
     
-    function updateBanner(bannerInfo) {
-      const banner = document.getElementById('banner');
-      const bannerName = document.getElementById('banner-name');
-      
-      console.log('[BANNER] Received banner info:', bannerInfo);
-      
-      if (bannerInfo && bannerInfo.show) {
-        console.log('[BANNER] Showing banner for:', bannerInfo.name);
-        bannerName.textContent = bannerInfo.name;
-        banner.classList.remove('hidden');
-        
-        // Clear any existing timeout
-        if (window.bannerTimeout) {
-          clearTimeout(window.bannerTimeout);
-        }
-        
-        // Only set timeout if not in cooldown (banner will be controlled by cooldown)
-        if (!bannerInfo.cooldown) {
-          // Auto hide after 3 seconds only if not in cooldown
-          window.bannerTimeout = setTimeout(() => {
-            console.log('[BANNER] Hiding banner');
-            banner.classList.add('hidden');
-          }, 3000);
-        }
-      } else {
-        // Only hide if explicitly told to hide
-        if (bannerInfo === false || bannerInfo === null) {
-          banner.classList.add('hidden');
-          if (window.bannerTimeout) {
-            clearTimeout(window.bannerTimeout);
-          }
-        }
-        // If bannerInfo is undefined, don't change display state
-      }
-    }
 
     function updateCooldownDisplay(cooldownInfo) {
       const cooldownDisplay = document.getElementById('cooldown-display');
@@ -1817,6 +1829,59 @@ INDEX_HTML = """
         // If cooldownInfo is undefined, don't change display state
       }
     }
+    
+    function showPopupNotification(popupInfo) {
+      console.log('[POPUP] Received popup info:', popupInfo);
+      
+      if (!popupInfo || !popupInfo.show) {
+        console.log('[POPUP] No popup to show');
+        return;
+      }
+      
+      const popup = document.getElementById('popup-notification');
+      const popupIcon = document.getElementById('popup-icon');
+      const popupTitle = document.getElementById('popup-title');
+      const popupMemberName = document.getElementById('popup-member-name');
+      const popupMemberId = document.getElementById('popup-member-id');
+      const popupMessage = document.getElementById('popup-message');
+      
+      // Clear any existing timeout
+      if (currentPopupTimeout) {
+        clearTimeout(currentPopupTimeout);
+        currentPopupTimeout = null;
+      }
+      
+      console.log('[POPUP] Showing popup:', popupInfo.style, 'for', popupInfo.member_name);
+      
+      // Set popup style
+      popup.className = 'popup-notification';
+      if (popupInfo.style === 'GRANTED') {
+        popup.classList.add('granted');
+        popupIcon.textContent = '✅';
+        popupTitle.textContent = 'ACCESS GRANTED';
+      } else if (popupInfo.style === 'DENIED') {
+        popup.classList.add('denied');
+        popupIcon.textContent = '❌';
+        popupTitle.textContent = 'ACCESS DENIED';
+      }
+      
+      // Set member information
+      popupMemberName.textContent = popupInfo.member_name || 'Unknown Member';
+      popupMemberId.textContent = `Member #${popupInfo.member_id || 'N/A'}`;
+      popupMessage.textContent = popupInfo.message || 'Welcome to FTL Gym!';
+      
+      // Show popup
+      popup.classList.remove('hidden');
+      console.log('[POPUP] Popup displayed at:', new Date().toLocaleTimeString());
+      
+      // Hide after 5 seconds
+      currentPopupTimeout = setTimeout(() => {
+        console.log('[POPUP] Auto-hiding popup after 5 seconds at:', new Date().toLocaleTimeString());
+        popup.classList.add('hidden');
+        currentPopupTimeout = null;
+      }, 5000);
+    }
+    
     
     function updatePerformanceMetrics(responseTime) {
       performanceMetrics.requestCount++;
@@ -2228,6 +2293,7 @@ def recognize():
         }
         
         # Process gym gate if member is recognized
+        popup_info = None
         if member_id and confidence <= TOLERANCE:
             # Check cooldown for this specific device
             if recognizer.is_in_cooldown(device_id):
@@ -2252,15 +2318,27 @@ def recognize():
                         recognizer.set_successful_login(name, device_id)
                     else:
                         print(f"[GYM] ❌ {gym_result['error']}")
+                    
+                    # Get popup info from gym result and add cooldown duration
+                    popup_info = gym_result.get("popup")
+                    if popup_info and popup_info.get("style") == "GRANTED":
+                        popup_info["cooldown_duration"] = recognizer.cooldown_duration
                 else:
                     print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
+                
+                # Fallback popup for testing if no gym popup
+                if not popup_info:
+                    print(f"[DEBUG] Creating fallback popup for {name}")
+                    popup_info = {
+                        "show": True,
+                        "style": "GRANTED",
+                        "member_name": name,
+                        "member_id": member_id,
+                        "message": f"Access Granted for {name}"
+                    }
         
         # Always add face data to faces array
         faces.append(face_data)
-        
-        # Add banner info if there was a recent successful login for this device
-        banner_info = None
-        last_successful_member = recognizer.get_last_successful_member(device_id)
         
         # Add cooldown info if this device is in cooldown
         cooldown_info = None
@@ -2271,34 +2349,12 @@ def recognize():
                 "remaining": cooldown_remaining
             }
             print(f"[COOLDOWN] Device {device_id} showing cooldown: {cooldown_remaining:.1f}s remaining")
-            
-            # Show Access Granted banner during cooldown if there was a successful login
-            if last_successful_member:
-                banner_info = {
-                    "show": True,
-                    "message": f"Access Granted",
-                    "name": last_successful_member,
-                    "cooldown": True
-                }
-                print(f"[BANNER] Device {device_id} showing banner for {last_successful_member} during cooldown")
-        elif last_successful_member:
-            # Show banner for 3 seconds after successful login (if not in cooldown)
-            device_data = recognizer.device_cooldowns.get(device_id, {})
-            last_login_time = device_data.get('last_login', 0)
-            time_since_login = time.time() - last_login_time
-            if time_since_login < 3.0:  # Show banner for 3 seconds
-                banner_info = {
-                    "show": True,
-                    "message": f"Access Granted",
-                    "name": last_successful_member
-                }
-                print(f"[BANNER] Device {device_id} showing banner for {last_successful_member} ({time_since_login:.1f}s ago)")
         
         return {
             "success": True, 
             "faces": faces, 
-            "banner": banner_info,
             "cooldown": cooldown_info,
+            "popup": popup_info,
             "debug": f"Processed {len(faces)} faces"
         }
         
