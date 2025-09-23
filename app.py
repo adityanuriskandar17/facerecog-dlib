@@ -2,6 +2,8 @@ import os
 import io
 import time
 import threading
+import gc
+import signal
 from typing import Dict, List, Tuple
 from collections import OrderedDict
 
@@ -30,6 +32,9 @@ TOLERANCE = 0.45  # lebih ketat dari default 0.6
 # Jika ingin batasi request gambar (detik)
 REQUEST_TIMEOUT = 15
 
+# Ukuran batch regenerasi encoding
+BATCH_SIZE = int(os.getenv("ENC_BATCH_SIZE", "10"))
+
 # Gym API Configuration
 GYM_API_KEY = os.getenv("API_KEY", "")
 GYM_DOOR_ID = os.getenv("DOOR_", "19456")
@@ -38,6 +43,109 @@ GYM_GATE_URL = os.getenv("CHECKIN_URL", "")
 
 # Store door IDs per session/device
 device_door_ids = {}
+
+# Track member IDs that returned 404 during this runtime to skip in next batches
+failed_404_member_ids = set()
+
+# Rate limiting for face recognition to prevent memory overload
+last_face_recognition_time = 0
+FACE_RECOGNITION_COOLDOWN = 0.1  # 100ms cooldown between face recognition calls
+
+# Memory management for dlib
+def force_garbage_collection():
+    """Force garbage collection to prevent memory issues"""
+    gc.collect()
+    gc.collect()  # Call twice to ensure cleanup
+
+def check_memory_usage():
+    """Check current memory usage and force cleanup if needed"""
+    try:
+        import psutil
+        import os
+        
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / 1024 / 1024
+        
+        print(f"[MEMORY] Current memory usage: {memory_mb:.1f} MB")
+        
+        # If memory usage is too high, force cleanup
+        if memory_mb > 1000:  # 1GB threshold
+            print(f"[MEMORY] High memory usage detected, forcing cleanup...")
+            force_garbage_collection()
+            
+        return memory_mb
+    except ImportError:
+        print(f"[MEMORY] psutil not available, skipping memory check")
+        return 0
+    except Exception as e:
+        print(f"[MEMORY] Error checking memory usage: {e}")
+        return 0
+
+def safe_face_recognition(func_name, *args, **kwargs):
+    """Safe wrapper for face_recognition functions with aggressive memory management"""
+    global last_face_recognition_time
+    
+    # Rate limiting to prevent memory overload
+    current_time = time.time()
+    time_since_last = current_time - last_face_recognition_time
+    if time_since_last < FACE_RECOGNITION_COOLDOWN:
+        sleep_time = FACE_RECOGNITION_COOLDOWN - time_since_last
+        time.sleep(sleep_time)
+    
+    last_face_recognition_time = time.time()
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Force cleanup before each attempt
+            force_garbage_collection()
+            
+            if func_name == "face_locations":
+                result = face_recognition.face_locations(*args, **kwargs)
+            elif func_name == "face_encodings":
+                result = face_recognition.face_encodings(*args, **kwargs)
+            elif func_name == "face_distance":
+                result = face_recognition.face_distance(*args, **kwargs)
+            else:
+                raise ValueError(f"Unknown function: {func_name}")
+            
+            # Force cleanup after successful call
+            force_garbage_collection()
+            return result
+            
+        except Exception as e:
+            print(f"[MEMORY] Error in {func_name} (attempt {attempt + 1}): {e}")
+            force_garbage_collection()
+            
+            # If it's a memory corruption error, try to recover
+            if "malloc" in str(e) or "corrupted" in str(e) or "double linked" in str(e):
+                print(f"[MEMORY] Memory corruption detected, attempting recovery...")
+                force_garbage_collection()
+                time.sleep(0.2)  # Longer delay for memory corruption
+                
+                if attempt == max_retries - 1:
+                    print(f"[MEMORY] Max retries reached, returning empty result")
+                    if func_name == "face_locations":
+                        return []
+                    elif func_name == "face_encodings":
+                        return []
+                    elif func_name == "face_distance":
+                        return []
+                    else:
+                        return None
+            else:
+                raise
+
+def signal_handler(signum, frame):
+    """Handle signals gracefully"""
+    print(f"[SIGNAL] Received signal {signum}, cleaning up...")
+    force_garbage_collection()
+    exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 # ===================== DB Helpers =====================
@@ -69,7 +177,7 @@ def fetch_member_images() -> List[Tuple[int, str, str, str]]:
     WHERE m.status = 1
       AND (f.status IS NULL OR f.status = 1)
       AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-      AND f.title = 'Profile2'
+      AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
     ORDER BY m.id ASC, f.created_at DESC
     """
     rows: List[Tuple[int, int, str, str, str, str]] = []
@@ -96,14 +204,27 @@ def url_to_rgb_array(url: str) -> np.ndarray:
     Download image from URL (supports querystrings), return RGB numpy array.
     Raises on error / if not an image.
     """
-    resp = requests.get(url, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    data = np.frombuffer(resp.content, dtype=np.uint8)
-    bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
-    if bgr is None:
-        raise ValueError("Gagal decode image dari URL")
-    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    return rgb
+    resp = None
+    data = None
+    bgr = None
+    try:
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        data = np.frombuffer(resp.content, dtype=np.uint8)
+        bgr = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ValueError("Gagal decode image dari URL")
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        return rgb
+    finally:
+        # Clean up memory
+        if resp is not None:
+            del resp
+        if data is not None:
+            del data
+        if bgr is not None:
+            del bgr
+        force_garbage_collection()
 
 def add_enc_field_to_member_table():
     """
@@ -180,70 +301,88 @@ def load_encoding_from_db(member_id: int) -> np.ndarray:
         print(f"[DB] Error loading encoding for member_id={member_id}: {e}")
         return None
 
-def regenerate_missing_encodings():
+ 
+
+def regenerate_missing_encodings(batch_size: int = BATCH_SIZE):
     """
     Regenerate ENC for all members who don't have valid encoding in database
     """
-    print("[ENC] Starting regeneration of missing encodings...")
-    
-    # Get all members without valid encodings
+    print(f"[ENC] Starting regeneration in batches of {batch_size}...")
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        
-        # Get members with NULL or invalid encodings
-        cur.execute("""
-            SELECT m.id, m.member_id, COALESCE(m.first_name, CONCAT('Member_', m.id)) as first_name,
-                   COALESCE(m.last_name, '') as last_name,
-                   CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url
-            FROM member m
-            JOIN member_file f ON f.member_id = m.id
-            WHERE m.status = 1
-              AND (f.status IS NULL OR f.status = 1)
-              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-              AND f.title = 'Profile2'
-              AND (m.enc IS NULL OR LENGTH(m.enc) != 1024)
-            ORDER BY m.id ASC
-        """)
-        
-        members = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        print(f"[ENC] Found {len(members)} members without valid encodings")
-        
-        success_count = 0
-        error_count = 0
-        
-        for member_id, gym_member_id, first_name, last_name, full_url in members:
-            try:
-                print(f"[ENC] Regenerating encoding for member_id={member_id}")
-                img = url_to_rgb_array(full_url)
-                boxes = face_recognition.face_locations(img, model="hog")
-                
-                if not boxes:
-                    print(f"[ENC] No face found for member_id={member_id}")
-                    error_count += 1
-                    continue
-                    
-                encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
-                if not encoding:
-                    print(f"[ENC] Failed to generate encoding for member_id={member_id}")
-                    error_count += 1
-                    continue
-                    
-                # Save to database
-                save_encoding_to_db(member_id, encoding[0])
-                success_count += 1
-                print(f"[ENC] Successfully regenerated encoding for member_id={member_id}")
-                
-            except Exception as e:
-                print(f"[ENC] Error regenerating encoding for member_id={member_id}: {e}")
-                error_count += 1
-        
-        print(f"[ENC] Regeneration complete. Success: {success_count}, Errors: {error_count}")
-        return {"success": True, "success_count": success_count, "error_count": error_count}
-        
+        total_success = 0
+        total_error = 0
+        batch_index = 0
+        while True:
+            conn = get_conn()
+            cur = conn.cursor()
+            base_sql = """
+                SELECT m.id, m.member_id, COALESCE(m.first_name, CONCAT('Member_', m.id)) as first_name,
+                       COALESCE(m.last_name, '') as last_name,
+                       CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url
+                FROM member m
+                JOIN member_file f ON f.member_id = m.id
+                WHERE m.status = 1
+                  AND (f.status IS NULL OR f.status = 1)
+                  AND (f.file_type_id IS NULL OR f.file_type_id = 1)
+                  AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
+                  AND (m.enc IS NULL OR LENGTH(m.enc) != 1024)
+            """
+            params = []
+            if failed_404_member_ids:
+                placeholders = ",".join(["%s"] * len(failed_404_member_ids))
+                base_sql += f" AND m.id NOT IN ({placeholders})"
+                params.extend(list(failed_404_member_ids))
+            base_sql += " ORDER BY m.id ASC LIMIT %s"
+            params.append(int(batch_size))
+            cur.execute(base_sql, params)
+            members = cur.fetchall()
+            cur.close()
+            conn.close()
+
+            if not members:
+                print("[ENC] No more members without valid encodings")
+                break
+
+            batch_index += 1
+            print(f"[ENC] Processing batch {batch_index} with {len(members)} members...")
+            batch_success = 0
+            batch_error = 0
+
+            for member_id, gym_member_id, first_name, last_name, full_url in members:
+                try:
+                    img = url_to_rgb_array(full_url)
+                    boxes = safe_face_recognition("face_locations", img, model="hog")
+                    if not boxes:
+                        batch_error += 1
+                        continue
+                    encoding = safe_face_recognition("face_encodings", img, known_face_locations=[boxes[0]])
+                    if not encoding:
+                        batch_error += 1
+                        continue
+                    save_encoding_to_db(member_id, encoding[0])
+                    batch_success += 1
+                except requests.exceptions.HTTPError as e:
+                    status = getattr(e.response, 'status_code', None)
+                    if status == 404 or '404' in str(e):
+                        failed_404_member_ids.add(member_id)
+                        batch_error += 1
+                        continue
+                    print(f"[ENC] HTTP error for member_id={member_id}: {e}")
+                    batch_error += 1
+                except Exception as e:
+                    print(f"[ENC] Error regenerating encoding for member_id={member_id}: {e}")
+                    batch_error += 1
+
+            total_success += batch_success
+            total_error += batch_error
+            print(f"[ENC] Batch {batch_index} done. Success: {batch_success}, Errors: {batch_error}, Total Success: {total_success}")
+
+            if batch_success == 0 and len(members) > 0:
+                print("[ENC] No successful encodings in this batch, stopping to avoid loop")
+                break
+
+        print(f"[ENC] Regeneration complete. Success: {total_success}, Errors: {total_error}")
+        return {"success": True, "success_count": total_success, "error_count": total_error}
     except Error as e:
         print(f"[ENC] Database error during regeneration: {e}")
         return {"success": False, "error": str(e)}
@@ -285,7 +424,7 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
                 # Generate new encoding from image if not in DB
                 print(f"[ENC] Generating new encoding for member_id={member_id}")
                 img = url_to_rgb_array(full_url)
-                boxes = face_recognition.face_locations(img, model="hog")
+                boxes = safe_face_recognition("face_locations", img, model="hog")
                 
                 if not boxes:
                     print(f"[ENC] Wajah tidak ditemukan di member_id={member_id} url={full_url}")
@@ -293,7 +432,7 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
                     continue
                     
                 # Ambil wajah pertama
-                encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
+                encoding = safe_face_recognition("face_encodings", img, known_face_locations=[boxes[0]])
                 if not encoding:
                     print(f"[ENC] Encoding gagal di member_id={member_id}")
                     skipped.append((member_id, "no_encoding"))
@@ -313,6 +452,91 @@ def build_known_encodings() -> Tuple[List[np.ndarray], List[str], List[int], Dic
             skipped.append((member_id, "error"))
 
     print(f"[ENC] Selesai. OK={len(encodings)} Skip={len(skipped)}")
+    return encodings, names, member_ids, gym_member_id_mapping
+
+def build_known_encodings_fast() -> Tuple[List[np.ndarray], List[str], List[int], Dict[int, int]]:
+    """
+    Ultra fast version - bulk load all encodings from database with cache
+    """
+    sources = fetch_member_images()
+    encodings: List[np.ndarray] = []
+    names: List[str] = []
+    member_ids: List[int] = []
+    gym_member_id_mapping: Dict[int, int] = {}  # member_id -> gym_member_id
+    skipped = 0
+
+    print(f"[ENC] Ultra fast load {len(sources)} member(s) - bulk DB query")
+    
+    # Create mapping of member_id to source data
+    source_map = {}
+    for member_id, gym_member_id, first_name, last_name, full_url in sources:
+        source_map[member_id] = (gym_member_id, first_name, last_name)
+    
+    # Bulk load all encodings from database
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Get all member IDs that have sources
+        member_id_list = list(source_map.keys())
+        placeholders = ','.join(['%s'] * len(member_id_list))
+        
+        cur.execute(
+            f"""
+            SELECT id, enc 
+            FROM member 
+            WHERE id IN ({placeholders}) 
+            AND enc IS NOT NULL 
+            AND LENGTH(enc) = 1024
+            """,
+            member_id_list
+        )
+        
+        # Create encoding cache
+        encoding_cache = {}
+        for db_member_id, enc_data in cur.fetchall():
+            try:
+                # Decode the encoding
+                encoding_array = np.frombuffer(enc_data, dtype=np.float64)
+                encoding_cache[db_member_id] = encoding_array
+            except Exception as e:
+                print(f"[ENC] Error decoding encoding for member_id={db_member_id}: {e}")
+        
+        cur.close()
+        conn.close()
+        
+        print(f"[ENC] Loaded {len(encoding_cache)} encodings from DB cache")
+        
+        # Process each source with cached encoding
+        for member_id in member_id_list:
+            try:
+                if member_id in encoding_cache:
+                    # Use cached encoding
+                    stored_encoding = encoding_cache[member_id]
+                    gym_member_id, first_name, last_name = source_map[member_id]
+                    
+                    # Create full name
+                    full_name = f"{first_name.strip()} {last_name.strip()}".strip()
+                    if not full_name or full_name == " ":
+                        full_name = first_name.strip() or f"Member_{member_id}"
+                    
+                    encodings.append(stored_encoding)
+                    names.append(full_name)
+                    member_ids.append(member_id)
+                    gym_member_id_mapping[member_id] = gym_member_id
+                    print(f"[ENC] Loaded from cache member_id={member_id} name={full_name}")
+                else:
+                    skipped += 1
+                    
+            except Exception as e:
+                print(f"[ENC] Error for member_id={member_id}: {e}")
+                skipped += 1
+                
+    except Exception as e:
+        print(f"[ENC] Database error during bulk load: {e}")
+        skipped = len(sources)
+
+    print(f"[ENC] Ultra fast load complete. OK={len(encodings)} Skip={skipped}")
     return encodings, names, member_ids, gym_member_id_mapping
 
 # ===================== Gym API Integration =====================
@@ -506,7 +730,7 @@ class Recognizer:
 
     def reload(self):
         with self.lock:
-            self.known_encodings, self.known_names, self.known_ids, self.gym_member_id_mapping = build_known_encodings()
+            self.known_encodings, self.known_names, self.known_ids, self.gym_member_id_mapping = build_known_encodings_fast()
             self.last_reload = time.time()
             # Update loaded member IDs
             self.loaded_member_ids = set(self.known_ids)
@@ -582,28 +806,41 @@ class Recognizer:
                 else:
                     # Generate new encoding
                     print(f"[AUTO-CHECK] Generating new encoding for member_id={member_id}")
-                    img = url_to_rgb_array(full_url)
-                    boxes = face_recognition.face_locations(img, model="hog")
-                    
-                    if not boxes:
-                        print(f"[AUTO-CHECK] No face found for member_id={member_id}")
-                        error_count += 1
-                        continue
+                    img = None
+                    boxes = None
+                    encoding = None
+                    try:
+                        img = url_to_rgb_array(full_url)
+                        boxes = safe_face_recognition("face_locations", img, model="hog")
                         
-                    encoding = face_recognition.face_encodings(img, known_face_locations=[boxes[0]])
-                    if not encoding:
-                        print(f"[AUTO-CHECK] Failed to generate encoding for member_id={member_id}")
-                        error_count += 1
-                        continue
+                        if not boxes:
+                            print(f"[AUTO-CHECK] No face found for member_id={member_id}")
+                            error_count += 1
+                            continue
+                            
+                        encoding = safe_face_recognition("face_encodings", img, known_face_locations=[boxes[0]])
+                        if not encoding:
+                            print(f"[AUTO-CHECK] Failed to generate encoding for member_id={member_id}")
+                            error_count += 1
+                            continue
+                            
+                        # Save to database
+                        save_encoding_to_db(member_id, encoding[0])
                         
-                    # Save to database
-                    save_encoding_to_db(member_id, encoding[0])
-                    
-                    new_encodings.append(encoding[0])
-                    new_names.append(full_name)
-                    new_member_ids_list.append(member_id)
-                    new_gym_member_id_mapping[member_id] = gym_member_id
-                    print(f"[AUTO-CHECK] Generated & saved encoding for member_id={member_id}")
+                        new_encodings.append(encoding[0])
+                        new_names.append(full_name)
+                        new_member_ids_list.append(member_id)
+                        new_gym_member_id_mapping[member_id] = gym_member_id
+                        print(f"[AUTO-CHECK] Generated & saved encoding for member_id={member_id}")
+                    finally:
+                        # Clean up memory
+                        if img is not None:
+                            del img
+                        if boxes is not None:
+                            del boxes
+                        if encoding is not None:
+                            del encoding
+                        force_garbage_collection()
                 
                 processed_count += 1
                 
@@ -717,12 +954,12 @@ class Recognizer:
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
         # Detect all faces (hog = CPU cepat; cnn = lebih akurat tapi butuh CUDA)
-        boxes = face_recognition.face_locations(rgb, model="hog")
-        encs = face_recognition.face_encodings(rgb, boxes)
+        boxes = safe_face_recognition("face_locations", rgb, model="hog")
+        encs = safe_face_recognition("face_encodings", rgb, boxes)
 
         for (top, right, bottom, left), enc in zip(boxes, encs):
             # Compute distance to all known encodings
-            distances = face_recognition.face_distance(known_encs, enc)
+            distances = safe_face_recognition("face_distance", known_encs, enc)
             if len(distances) == 0:
                 name = "Unknown"
                 best_dist = 1.0
@@ -743,15 +980,18 @@ recognizer = Recognizer()
 
 def background_auto_check():
     """
-    Background thread untuk auto-check data baru
+    Background thread untuk auto-check data baru dengan memory management
     """
     while True:
         try:
             recognizer.check_for_new_members()
-            time.sleep(5)  # Check every 5 seconds (faster than interval)
+            # Force garbage collection after each check
+            force_garbage_collection()
+            time.sleep(10)  # Increased interval to reduce load
         except Exception as e:
             print(f"[BACKGROUND] Error in auto-check: {e}")
-            time.sleep(30)  # Wait longer on error
+            force_garbage_collection()
+            time.sleep(60)  # Wait longer on error
 
 # Background thread will be started after initial load in __main__
 
@@ -2202,12 +2442,25 @@ def recognize():
             known_names = recognizer.known_names
             known_ids = recognizer.known_ids
         
+        # For GCP: Load encodings on-demand if not loaded
+        if not known_encs:
+            print(f"[RECOGNIZE] No known encodings loaded. Total: {len(known_encs)}. Attempting to load on-demand...")
+            try:
+                recognizer.reload()
+                known_encs = recognizer.known_encodings
+                known_names = recognizer.known_names
+                known_ids = recognizer.known_ids
+                print(f"[RECOGNIZE] On-demand load completed. Loaded: {len(known_encs)} encodings")
+            except Exception as e:
+                print(f"[RECOGNIZE] On-demand load failed: {e}")
+                return {"success": True, "faces": [], "debug": "Failed to load encodings on-demand", "error": str(e)}
         
         if not known_encs:
-            return {"success": True, "faces": [], "debug": "No known encodings loaded"}
+            print(f"[RECOGNIZE] Still no known encodings after on-demand load. Total: {len(known_encs)}")
+            return {"success": True, "faces": [], "debug": "No known encodings loaded after on-demand attempt", "total_encodings": len(known_encs)}
         
         # Detect faces with faster model
-        boxes = face_recognition.face_locations(rgb, model="hog", number_of_times_to_upsample=0)
+        boxes = safe_face_recognition("face_locations", rgb, model="hog", number_of_times_to_upsample=0)
         
         if not boxes:
             return {"success": True, "faces": [], "debug": "No faces detected"}
@@ -2221,7 +2474,7 @@ def recognize():
         largest_box = boxes[largest_face_idx]
         
         # Generate encoding only for the largest face
-        encs = face_recognition.face_encodings(rgb, [largest_box])
+        encs = safe_face_recognition("face_encodings", rgb, [largest_box])
         
         if not encs:
             return {"success": True, "faces": [], "debug": "No face encoding generated"}
@@ -2231,7 +2484,7 @@ def recognize():
         (top, right, bottom, left) = largest_box
         enc = encs[0]  # Only one encoding for the largest face
         
-        distances = face_recognition.face_distance(known_encs, enc)
+        distances = safe_face_recognition("face_distance", known_encs, enc)
         if len(distances) == 0:
             name = "Unknown"
             confidence = 1.0
@@ -2358,19 +2611,34 @@ def reload_route():
     threading.Thread(target=recognizer.reload, daemon=True).start()
     return "Reload encodings dipicu. Tunggu 1-3 detik lalu refresh stream."
 
+@app.route("/check_new_members")
+def check_new_members_route():
+    """
+    Manual check for new members (auto-check disabled to prevent memory issues)
+    """
+    try:
+        result = recognizer.check_for_new_members()
+        return f"New members checked. Result: {result}"
+    except Exception as e:
+        return f"Error checking new members: {str(e)}"
+
 @app.route("/regenerate_enc")
 def regenerate_enc_route():
     """
     Manually trigger regeneration of missing encodings
     """
     try:
-        result = regenerate_missing_encodings()
+        from flask import request
+        limit = request.args.get('limit') or request.args.get('batch') or request.args.get('size')
+        batch = int(limit) if limit and str(limit).isdigit() else BATCH_SIZE
+        result = regenerate_missing_encodings(batch)
         if result["success"]:
             return {
                 "success": True,
                 "message": f"ENC regeneration completed. Success: {result['success_count']}, Errors: {result['error_count']}",
                 "success_count": result["success_count"],
-                "error_count": result["error_count"]
+                "error_count": result["error_count"],
+                "batch_size": batch
             }
         else:
             return {"success": False, "error": result["error"]}
@@ -2394,7 +2662,7 @@ def enc_status_route():
             WHERE m.status = 1
               AND (f.status IS NULL OR f.status = 1)
               AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-              AND f.title = 'Profile2'
+              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
         """)
         total_members = cur.fetchone()[0]
         
@@ -2406,7 +2674,7 @@ def enc_status_route():
             WHERE m.status = 1
               AND (f.status IS NULL OR f.status = 1)
               AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-              AND f.title = 'Profile2'
+              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
               AND m.enc IS NOT NULL 
               AND LENGTH(m.enc) = 1024
         """)
@@ -2428,24 +2696,6 @@ def enc_status_route():
             "auto_check_interval": recognizer.auto_check_interval
         }
         
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-@app.route("/check_new_members")
-def check_new_members_route():
-    """
-    Manually trigger check for new members
-    """
-    try:
-        # Force check by resetting last check time
-        recognizer.last_auto_check = 0
-        recognizer.check_for_new_members()
-        
-        return {
-            "success": True,
-            "message": "New members check completed",
-            "loaded_members": len(recognizer.loaded_member_ids)
-        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -2515,18 +2765,256 @@ def health():
         "tolerance": TOLERANCE
     }
 
+@app.route("/gcp_debug")
+def gcp_debug_route():
+    """
+    GCP specific debug endpoint to check database and encoding status
+    """
+    try:
+        # Check database connection
+        db_status = "connected"
+        member_count = 0
+        encoding_count = 0
+        member_files_count = 0
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            
+            # Count total members
+            cur.execute("SELECT COUNT(*) FROM member WHERE status = 1")
+            member_count = cur.fetchone()[0]
+            
+            # Count members with encodings
+            cur.execute("SELECT COUNT(*) FROM member WHERE status = 1 AND enc IS NOT NULL AND LENGTH(enc) = 1024")
+            encoding_count = cur.fetchone()[0]
+            
+            # Count member files that match our criteria
+            cur.execute("""
+                SELECT COUNT(*) 
+                FROM member m
+                JOIN member_file f ON f.member_id = m.id
+                WHERE m.status = 1
+                  AND (f.status IS NULL OR f.status = 1)
+                  AND (f.file_type_id IS NULL OR f.file_type_id = 1)
+                  AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
+            """)
+            member_files_count = cur.fetchone()[0]
+            
+            cur.close()
+            conn.close()
+        except Exception as e:
+            db_status = f"error: {str(e)}"
+        
+        # Check environment variables
+        env_vars = {
+            "DB_HOST": bool(os.getenv("DB_HOST")),
+            "DB_PORT": bool(os.getenv("DB_PORT")),
+            "DB_NAME": bool(os.getenv("DB_NAME")),
+            "DB_USER": bool(os.getenv("DB_USER")),
+            "DB_PASSWORD": bool(os.getenv("DB_PASSWORD")),
+            "API_KEY": bool(os.getenv("API_KEY")),
+        }
+        
+        return {
+            "success": True,
+            "environment": "GCP",
+            "database_status": db_status,
+            "total_members": member_count,
+            "members_with_encodings": encoding_count,
+            "member_files_matching_criteria": member_files_count,
+            "environment_variables": env_vars,
+            "recognizer_status": {
+                "loaded_members": len(recognizer.loaded_member_ids),
+                "known_encodings": len(recognizer.known_encodings),
+                "known_names": len(recognizer.known_names)
+            },
+            "note": "GCP Cloud Run uses stateless instances, so in-memory caching may not persist between requests"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.route("/gcp_load_on_demand")
+def gcp_load_on_demand_route():
+    """
+    Load encodings on-demand for GCP (since caching doesn't work well)
+    """
+    try:
+        print("[GCP] Loading encodings on-demand...")
+        
+        # Force reload from database
+        recognizer.reload()
+        
+        return {
+            "success": True,
+            "message": "Encodings loaded on-demand",
+            "loaded_count": len(recognizer.known_encodings),
+            "recognizer_status": {
+                "loaded_members": len(recognizer.loaded_member_ids),
+                "known_encodings": len(recognizer.known_encodings),
+                "known_names": len(recognizer.known_names)
+            }
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.route("/recognize_gcp", methods=["POST"])
+def recognize_gcp():
+    """
+    GCP optimized recognition - load encodings directly from DB without caching
+    """
+    try:
+        from flask import request
+        
+        if 'frame' not in request.files:
+            return {"success": False, "error": "No frame provided"}
+        
+        file = request.files['frame']
+        if file.filename == '':
+            return {"success": False, "error": "No file selected"}
+        
+        # Read image data
+        image_data = file.read()
+        nparr = np.frombuffer(image_data, np.uint8)
+        frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame_bgr is None:
+            return {"success": False, "error": "Invalid image"}
+        
+        # Resize image for faster processing if too large
+        height, width = frame_bgr.shape[:2]
+        if width > 640:
+            scale = 640 / width
+            new_width = 640
+            new_height = int(height * scale)
+            frame_bgr = cv2.resize(frame_bgr, (new_width, new_height))
+        
+        # Convert to RGB for face detection
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        
+        # Load encodings directly from database (no caching)
+        print("[GCP] Loading encodings directly from database...")
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Get all encodings with member info
+        cur.execute("""
+            SELECT m.id, m.member_id, m.first_name, m.last_name, m.enc
+            FROM member m
+            JOIN member_file f ON f.member_id = m.id
+            WHERE m.status = 1
+              AND (f.status IS NULL OR f.status = 1)
+              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
+              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
+              AND m.enc IS NOT NULL 
+              AND LENGTH(m.enc) = 1024
+        """)
+        
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        if not rows:
+            return {"success": True, "faces": [], "debug": "No encodings found in database"}
+        
+        # Process encodings
+        known_encs = []
+        known_names = []
+        known_ids = []
+        
+        for member_id, gym_member_id, first_name, last_name, enc_bytes in rows:
+            try:
+                # Convert bytes to numpy array
+                encoding = np.frombuffer(enc_bytes, dtype=np.float64)
+                if len(encoding) == 128:  # Valid face encoding
+                    known_encs.append(encoding)
+                    full_name = f"{first_name.strip()} {last_name.strip()}".strip()
+                    if not full_name or full_name == " ":
+                        full_name = first_name.strip() or f"Member_{member_id}"
+                    known_names.append(full_name)
+                    known_ids.append(member_id)
+            except Exception as e:
+                print(f"[GCP] Error processing encoding for member {member_id}: {e}")
+                continue
+        
+        print(f"[GCP] Loaded {len(known_encs)} encodings directly from database")
+        
+        if not known_encs:
+            return {"success": True, "faces": [], "debug": "No valid encodings processed"}
+        
+        # Detect faces
+        boxes = safe_face_recognition("face_locations", rgb, model="hog", number_of_times_to_upsample=0)
+        
+        if not boxes:
+            return {"success": True, "faces": [], "debug": "No faces detected"}
+        
+        # Process largest face
+        face_sizes = [(i, (box[2] - box[0]) * (box[3] - box[1])) for i, box in enumerate(boxes)]
+        face_sizes.sort(key=lambda x: x[1], reverse=True)
+        largest_face_idx = face_sizes[0][0]
+        largest_box = boxes[largest_face_idx]
+        
+        # Generate encoding for detected face
+        encs = safe_face_recognition("face_encodings", rgb, [largest_box])
+        
+        if not encs:
+            return {"success": True, "faces": [], "debug": "No face encoding generated"}
+        
+        # Compare with known encodings
+        (top, right, bottom, left) = largest_box
+        enc = encs[0]
+        
+        distances = safe_face_recognition("face_distance", known_encs, enc)
+        if len(distances) == 0:
+            name = "Unknown"
+            confidence = 1.0
+            member_id = None
+        else:
+            idx = int(np.argmin(distances))
+            confidence = float(distances[idx])
+            name = known_names[idx] if confidence <= TOLERANCE else "Unknown"
+            member_id = known_ids[idx] if confidence <= TOLERANCE else None
+        
+        # Get device ID for cooldown check
+        device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
+        
+        # Check cooldown
+        current_time = time.time()
+        if device_id in device_door_ids:
+            last_access = device_door_ids[device_id].get('last_access', 0)
+            if current_time - last_access < 2.0:  # 2 second cooldown
+                return {"success": True, "faces": [], "debug": "Cooldown active"}
+        
+        # Update device info
+        device_door_ids[device_id] = {
+            'last_access': current_time,
+            'door_id': request.args.get('doorid', GYM_DOOR_ID)
+        }
+        
+        faces = []
+        if name != "Unknown":
+            faces.append({
+                "name": name,
+                "confidence": confidence,
+                "member_id": member_id,
+                "box": [int(left), int(top), int(right), int(bottom)]
+            })
+        
+        return {"success": True, "faces": faces, "debug": f"Processed {len(known_encs)} encodings"}
+        
+    except Exception as e:
+        print(f"[GCP] Recognition error: {e}")
+        return {"success": False, "error": str(e)}
+
 # ===================== Main =====================
 if __name__ == "__main__":
     # Ensure ENC field exists and regenerate missing encodings
     print("[STARTUP] Ensuring ENC field exists...")
     add_enc_field_to_member_table()
     
-    print("[STARTUP] Checking for missing encodings...")
-    enc_status = regenerate_missing_encodings()
-    if enc_status["success"]:
-        print(f"[STARTUP] ENC regeneration: {enc_status['success_count']} success, {enc_status['error_count']} errors")
-    else:
-        print(f"[STARTUP] ENC regeneration failed: {enc_status['error']}")
+    print("[STARTUP] Skipping encoding regeneration - encodings already exist")
+    print(f"[STARTUP] Regeneration batch size: {BATCH_SIZE} (will be used for new members only)")
+    enc_status = {"success": True, "success_count": 0, "error_count": 0}
+    print(f"[STARTUP] ENC regeneration: {enc_status['success_count']} success, {enc_status['error_count']} errors (skipped)")
     
     # Initial load
     print("[STARTUP] Loading encodings...")
@@ -2534,10 +3022,17 @@ if __name__ == "__main__":
     
     print(f"[STARTUP] Auto-check interval: {recognizer.auto_check_interval} seconds")
     print(f"[STARTUP] Loaded {len(recognizer.loaded_member_ids)} member encodings")
-    # Start background auto-check thread after initialization completes
-    auto_check_thread = threading.Thread(target=background_auto_check, daemon=True)
-    auto_check_thread.start()
-    print("[BACKGROUND] Auto-check thread started")
+    
+    # Force garbage collection after loading
+    force_garbage_collection()
+    
+    # Check memory usage
+    check_memory_usage()
+    
+    # Auto-check disabled to prevent memory issues
+    # auto_check_thread = threading.Thread(target=background_auto_check, daemon=True)
+    # auto_check_thread.start()
+    print("[BACKGROUND] Auto-check thread disabled to prevent memory issues")
     print("[STARTUP] Server starting...")
     # Jalankan Flask
     # Akses di: http://127.0.0.1:8001/
