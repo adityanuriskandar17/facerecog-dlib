@@ -14,6 +14,9 @@ import mysql.connector
 from mysql.connector import Error
 from dotenv import load_dotenv
 from flask import Flask, Response, render_template_string
+import redis
+import pickle
+import json
 
 # ==== Dlib via face_recognition ====
 import face_recognition  # built on top of dlib
@@ -35,6 +38,13 @@ REQUEST_TIMEOUT = 15
 # Ukuran batch regenerasi encoding
 BATCH_SIZE = int(os.getenv("ENC_BATCH_SIZE", "10"))
 
+# Redis Configuration
+REDIS_HOST = "localhost "
+REDIS_PORT = 6379
+REDIS_PASSWORD = ""
+REDIS_DB = 0
+REDIS_ENABLED = True
+
 # Gym API Configuration
 GYM_API_KEY = os.getenv("API_KEY", "")
 GYM_DOOR_ID = os.getenv("DOOR_", "19456")
@@ -46,6 +56,9 @@ device_door_ids = {}
 
 # Track member IDs that returned 404 during this runtime to skip in next batches
 failed_404_member_ids = set()
+
+# Redis connection
+redis_client = None
 
 # Rate limiting for face recognition to prevent memory overload
 last_face_recognition_time = 0
@@ -146,6 +159,105 @@ def signal_handler(signum, frame):
 # Register signal handlers
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
+# ===================== Redis Functions =====================
+
+def get_redis_client():
+    """Get Redis client connection"""
+    global redis_client
+    if redis_client is None and REDIS_ENABLED:
+        try:
+            redis_client = redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                password=REDIS_PASSWORD if REDIS_PASSWORD else None,
+                db=REDIS_DB,
+                decode_responses=False,  # Keep binary for numpy arrays
+                socket_connect_timeout=5,
+                socket_timeout=5,
+                retry_on_timeout=True
+            )
+            # Test connection
+            redis_client.ping()
+            print(f"[REDIS] Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+        except Exception as e:
+            print(f"[REDIS] Failed to connect to Redis: {e}")
+            redis_client = None
+    return redis_client
+
+def cache_encodings(encodings: List[np.ndarray], names: List[str], member_ids: List[int], cache_key: str = "face_encodings"):
+    """Cache encodings to Redis"""
+    if not REDIS_ENABLED:
+        return False
+    
+    try:
+        client = get_redis_client()
+        if client is None:
+            return False
+        
+        # Serialize data
+        data = {
+            'encodings': [enc.tobytes() for enc in encodings],
+            'names': names,
+            'member_ids': member_ids,
+            'timestamp': time.time()
+        }
+        
+        # Store with 1 hour expiration
+        serialized_data = pickle.dumps(data)
+        client.setex(cache_key, 3600, serialized_data)
+        print(f"[REDIS] Cached {len(encodings)} encodings with key: {cache_key}")
+        return True
+    except Exception as e:
+        print(f"[REDIS] Failed to cache encodings: {e}")
+        return False
+
+def get_cached_encodings(cache_key: str = "face_encodings") -> Tuple[List[np.ndarray], List[str], List[int]]:
+    """Get cached encodings from Redis"""
+    if not REDIS_ENABLED:
+        return [], [], []
+    
+    try:
+        client = get_redis_client()
+        if client is None:
+            return [], [], []
+        
+        # Get cached data
+        cached_data = client.get(cache_key)
+        if cached_data is None:
+            print(f"[REDIS] No cached encodings found with key: {cache_key}")
+            return [], [], []
+        
+        # Deserialize data
+        data = pickle.loads(cached_data)
+        
+        # Convert bytes back to numpy arrays
+        encodings = [np.frombuffer(enc_bytes, dtype=np.float64) for enc_bytes in data['encodings']]
+        names = data['names']
+        member_ids = data['member_ids']
+        
+        print(f"[REDIS] Retrieved {len(encodings)} cached encodings (cached at: {data.get('timestamp', 'unknown')})")
+        return encodings, names, member_ids
+    except Exception as e:
+        print(f"[REDIS] Failed to get cached encodings: {e}")
+        return [], [], []
+
+def invalidate_encodings_cache(cache_key: str = "face_encodings"):
+    """Invalidate encodings cache"""
+    if not REDIS_ENABLED:
+        return False
+    
+    try:
+        client = get_redis_client()
+        if client is None:
+            return False
+        
+        client.delete(cache_key)
+        print(f"[REDIS] Invalidated cache with key: {cache_key}")
+        return True
+    except Exception as e:
+        print(f"[REDIS] Failed to invalidate cache: {e}")
+        return False
 
 
 # ===================== DB Helpers =====================
@@ -730,11 +842,60 @@ class Recognizer:
 
     def reload(self):
         with self.lock:
+            # Try to get from Redis cache first
+            if REDIS_ENABLED:
+                cached_encodings, cached_names, cached_member_ids = get_cached_encodings()
+                if cached_encodings:
+                    print(f"[RELOAD] Using cached encodings from Redis: {len(cached_encodings)}")
+                    self.known_encodings = cached_encodings
+                    self.known_names = cached_names
+                    self.known_ids = cached_member_ids
+                    self.loaded_member_ids = set(self.known_ids)
+                    # Build gym_member_id_mapping from database
+                    self.gym_member_id_mapping = self._build_gym_member_mapping()
+                    self.last_reload = time.time()
+                    return
+            
+            # Fallback to database if no cache
             self.known_encodings, self.known_names, self.known_ids, self.gym_member_id_mapping = build_known_encodings_fast()
             self.last_reload = time.time()
             # Update loaded member IDs
             self.loaded_member_ids = set(self.known_ids)
-            print(f"[RELOAD] Loaded {len(self.loaded_member_ids)} member encodings")
+            print(f"[RELOAD] Loaded {len(self.loaded_member_ids)} member encodings from database")
+            
+            # Cache to Redis
+            if REDIS_ENABLED and self.known_encodings:
+                cache_encodings(self.known_encodings, self.known_names, self.known_ids)
+    
+    def _build_gym_member_mapping(self) -> Dict[int, int]:
+        """Build gym_member_id_mapping from database"""
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            
+            if not self.known_ids:
+                return {}
+            
+            placeholders = ','.join(['%s'] * len(self.known_ids))
+            cur.execute(
+                f"""
+                SELECT m.id, m.member_id 
+                FROM member m
+                WHERE m.id IN ({placeholders})
+                """,
+                list(self.known_ids)
+            )
+            
+            mapping = {}
+            for db_member_id, gym_member_id in cur.fetchall():
+                mapping[db_member_id] = gym_member_id
+            
+            cur.close()
+            conn.close()
+            return mapping
+        except Exception as e:
+            print(f"[MAPPING] Error building gym member mapping: {e}")
+            return {}
     
     def check_for_new_members(self):
         """
@@ -856,6 +1017,10 @@ class Recognizer:
                 self.known_ids.extend(new_member_ids_list)
                 self.gym_member_id_mapping.update(new_gym_member_id_mapping)
                 self.loaded_member_ids.update(new_member_ids)
+            
+            # Update Redis cache
+            if REDIS_ENABLED:
+                cache_encodings(self.known_encodings, self.known_names, self.known_ids)
             
             print(f"[AUTO-CHECK] Successfully added {processed_count} new encodings. Errors: {error_count}")
         else:
@@ -2857,6 +3022,101 @@ def gcp_load_on_demand_route():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.route("/redis_status")
+def redis_status_route():
+    """
+    Check Redis connection and cache status
+    """
+    try:
+        if not REDIS_ENABLED:
+            return {
+                "success": True,
+                "redis_enabled": False,
+                "message": "Redis is disabled"
+            }
+        
+        client = get_redis_client()
+        if client is None:
+            return {
+                "success": False,
+                "redis_enabled": True,
+                "message": "Failed to connect to Redis"
+            }
+        
+        # Test connection
+        client.ping()
+        
+        # Check cache
+        cached_encodings, cached_names, cached_member_ids = get_cached_encodings()
+        
+        return {
+            "success": True,
+            "redis_enabled": True,
+            "redis_connected": True,
+            "cache_status": {
+                "has_cached_data": len(cached_encodings) > 0,
+                "cached_encodings_count": len(cached_encodings),
+                "cached_names_count": len(cached_names),
+                "cached_member_ids_count": len(cached_member_ids)
+            },
+            "redis_config": {
+                "host": REDIS_HOST,
+                "port": REDIS_PORT,
+                "db": REDIS_DB,
+                "password_set": bool(REDIS_PASSWORD)
+            }
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "redis_enabled": REDIS_ENABLED,
+            "error": str(e)
+        }
+
+@app.route("/redis_clear_cache")
+def redis_clear_cache_route():
+    """
+    Clear Redis cache
+    """
+    try:
+        if not REDIS_ENABLED:
+            return {
+                "success": False,
+                "message": "Redis is disabled"
+            }
+        
+        success = invalidate_encodings_cache()
+        return {
+            "success": success,
+            "message": "Cache cleared successfully" if success else "Failed to clear cache"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.route("/redis_reload")
+def redis_reload_route():
+    """
+    Force reload encodings and update Redis cache
+    """
+    try:
+        print("[REDIS] Force reloading encodings...")
+        
+        # Clear cache first
+        if REDIS_ENABLED:
+            invalidate_encodings_cache()
+        
+        # Force reload from database
+        recognizer.reload()
+        
+        return {
+            "success": True,
+            "message": "Encodings reloaded and cached",
+            "loaded_count": len(recognizer.known_encodings),
+            "redis_cached": REDIS_ENABLED and len(recognizer.known_encodings) > 0
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.route("/recognize_gcp", methods=["POST"])
 def recognize_gcp():
     """
@@ -3007,6 +3267,11 @@ def recognize_gcp():
 
 # ===================== Main =====================
 if __name__ == "__main__":
+    # Initialize Redis connection
+    if REDIS_ENABLED:
+        print("[STARTUP] Initializing Redis connection...")
+        get_redis_client()
+    
     # Ensure ENC field exists and regenerate missing encodings
     print("[STARTUP] Ensuring ENC field exists...")
     add_enc_field_to_member_table()
@@ -3022,6 +3287,7 @@ if __name__ == "__main__":
     
     print(f"[STARTUP] Auto-check interval: {recognizer.auto_check_interval} seconds")
     print(f"[STARTUP] Loaded {len(recognizer.loaded_member_ids)} member encodings")
+    print(f"[STARTUP] Redis cache: {'Enabled' if REDIS_ENABLED else 'Disabled'}")
     
     # Force garbage collection after loading
     force_garbage_collection()
