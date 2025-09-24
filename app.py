@@ -1789,6 +1789,7 @@ INDEX_HTML = """
 <body>
   <div class="container">
     <div class="header">
+      <img src="/static/FTL-LOGO.png" alt="FTL Logo" style="height: 60px; margin-bottom: 10px;">
       <h1>Face Recognition FTL GYM</h1>
       <p style="color: var(--text-secondary); margin: 0;">Powered by Horizon</p>
   </div>
