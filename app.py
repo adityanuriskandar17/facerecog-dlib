@@ -30,7 +30,9 @@ MYSQL_DATABASE = os.getenv("DB_NAME", "")
 MYSQL_USER = os.getenv("DB_USER", "")
 MYSQL_PASSWORD = os.getenv("DB_PASSWORD", "")
 
-TOLERANCE = 0.45  # lebih ketat dari default 0.6
+TOLERANCE = 0.40  # tighten threshold to reduce false positives
+TOP2_MARGIN = 0.06  # require best vs second-best distance gap
+REQUIRED_CONSISTENT_FRAMES = 2  # require N consecutive frames for same identity
 
 # Jika ingin batasi request gambar (detik)
 REQUEST_TIMEOUT = 15
@@ -49,7 +51,8 @@ REDIS_ENABLED = True
 GYM_API_KEY = os.getenv("API_KEY", "")
 GYM_DOOR_ID = os.getenv("DOOR_", "19456")
 GYM_LOGIN_URL = os.getenv("LOGIN_URL", "")
-GYM_GATE_URL = os.getenv("CHECKIN_URL", "")
+GYM_GATE_URL = ""
+CHECKIN_ENABLED = False
 
 # Store door IDs per session/device
 device_door_ids = {}
@@ -687,6 +690,20 @@ def gym_open_gate(token: str) -> dict:
     Open gym gate using token
     """
     try:
+        if not CHECKIN_ENABLED or not GYM_GATE_URL:
+            print("[GYM] GYM_GATE_URL is empty, skip calling gate API")
+            return {
+                "success": True,
+                "message": "Gate call skipped (URL empty)",
+                "popup": {
+                    "show": True,
+                    "style": "INFO",
+                    "member_name": "Unknown Member",
+                    "member_id": "N/A",
+                    "message": "Gate API disabled",
+                    "cooldown_duration": 10
+                }
+            }
         payload = {
             "api_key": GYM_API_KEY,
             "doorid": GYM_DOOR_ID,
@@ -717,6 +734,20 @@ def gym_open_gate_with_door(token: str, door_id: str) -> dict:
     Open gym gate using token with specific door ID
     """
     try:
+        if not CHECKIN_ENABLED or not GYM_GATE_URL:
+            print(f"[GYM] GYM_GATE_URL is empty, skip calling gate API for door {door_id}")
+            return {
+                "success": True,
+                "message": "Gate call skipped (URL empty)",
+                "popup": {
+                    "show": True,
+                    "style": "INFO",
+                    "member_name": "Unknown Member",
+                    "member_id": "N/A",
+                    "message": "Gate API disabled",
+                    "cooldown_duration": 10
+                }
+            }
         payload = {
             "api_key": GYM_API_KEY,
             "doorid": door_id,
@@ -834,6 +865,8 @@ class Recognizer:
         self.device_cooldowns: Dict[str, Dict] = {}  # device_id -> {last_login: timestamp, member: name}
         self.cooldown_duration = 5
         self.denied_cooldown_duration = 5
+        # Prediction streak per device for multi-frame confirmation
+        self.device_prediction_streak: Dict[str, Dict] = {}  # device_id -> {name: str, count: int}
         # Track loaded member IDs for new data detection
         self.loaded_member_ids: set = set()
         # Auto-check interval for new data (seconds)
@@ -1097,6 +1130,18 @@ class Recognizer:
             return ""
         return device_data.get('member', "")
 
+    def update_prediction_streak(self, device_id: str, predicted_name: str) -> bool:
+        if not device_id or not predicted_name or predicted_name == "Unknown":
+            self.device_prediction_streak.pop(device_id, None)
+            return False
+        entry = self.device_prediction_streak.get(device_id, {"name": "", "count": 0})
+        if entry.get("name") == predicted_name:
+            entry["count"] = entry.get("count", 0) + 1
+        else:
+            entry = {"name": predicted_name, "count": 1}
+        self.device_prediction_streak[device_id] = entry
+        return entry["count"] >= REQUIRED_CONSISTENT_FRAMES
+
     def recognize_frame(self, frame_bgr: np.ndarray) -> np.ndarray:
         """
         Detect & recognize faces in BGR frame. Draw boxes & labels.
@@ -1159,6 +1204,148 @@ def background_auto_check():
             time.sleep(60)  # Wait longer on error
 
 # Background thread will be started after initial load in __main__
+
+
+# ==== FUNGSI VALIDASI TAMBAHAN START ====
+def enhanced_face_validation(face_encoding, known_encodings, known_names, known_ids):
+    """
+    Validasi tambahan untuk mengurangi false positive
+    """
+    if len(known_encodings) == 0:
+        return "Unknown", 1.0, None
+    
+    # Hitung distance ke semua known faces
+    distances = safe_face_recognition("face_distance", known_encodings, face_encoding)
+    
+    if len(distances) == 0:
+        return "Unknown", 1.0, None
+    
+    # Dapatkan 3 terbaik
+    sorted_indices = np.argsort(distances)
+    best_idx = sorted_indices[0]
+    best_dist = distances[best_idx]
+    
+    # Validasi 1: Threshold utama
+    if best_dist > TOLERANCE:
+        return "Unknown", best_dist, None
+    
+    # Validasi 2: Margin antara best dan second-best
+    if len(distances) > 1:
+        second_dist = distances[sorted_indices[1]]
+        margin = second_dist - best_dist
+        if margin < TOP2_MARGIN:
+            return "Unknown", best_dist, None
+    
+    # Validasi 3: Confidence score tambahan
+    confidence_score = 1 - (best_dist / TOLERANCE)
+    if confidence_score < 0.7:  # Minimal 70% confidence
+        return "Unknown", best_dist, None
+    
+    # Validasi 4: Cek quality face encoding
+    if not is_good_quality_encoding(face_encoding):
+        return "Unknown", best_dist, None
+    
+    return known_names[best_idx], best_dist, known_ids[best_idx]
+
+def is_good_quality_encoding(encoding):
+    """
+    Validasi kualitas encoding untuk mengurangi false positive
+    """
+    # Cek jika encoding tidak semua nol atau NaN
+    if np.all(encoding == 0) or np.any(np.isnan(encoding)):
+        return False
+    
+    # Cek variance - encoding yang bagus harus punya variasi
+    if np.var(encoding) < 0.001:
+        return False
+    
+    # Cek magnitude - harus dalam range yang reasonable
+    magnitude = np.linalg.norm(encoding)
+    if magnitude < 0.5 or magnitude > 2.0:
+        return False
+    
+    return True
+
+
+def enhanced_face_detection(rgb_frame):
+    """
+    Face detection dengan filter kualitas yang lebih ketat
+    """
+    # Method 1: Coba dengan HOG (cepat)
+    boxes = safe_face_recognition("face_locations", rgb_frame, model="hog", number_of_times_to_upsample=1)
+    
+    # Filter boxes berdasarkan size dan aspect ratio
+    filtered_boxes = []
+    for box in boxes:
+        top, right, bottom, left = box
+        width = right - left
+        height = bottom - top
+        
+        # Validasi ukuran wajah minimal
+        if width < 100 or height < 100:  # Wajah terlalu kecil
+            continue
+            
+        # Validasi aspect ratio wajah
+        aspect_ratio = width / height
+        if aspect_ratio < 0.6 or aspect_ratio > 1.4:  # Wajah terlalu miring
+            continue
+            
+        filtered_boxes.append(box)
+    
+    # Jika tidak ada wajah yang terdeteksi, coba method lain
+    if not filtered_boxes:
+        # Method 2: CNN (lebih akurat tapi lambat)
+        try:
+            boxes_cnn = safe_face_recognition("face_locations", rgb_frame, model="cnn", number_of_times_to_upsample=1)
+            for box in boxes_cnn:
+                top, right, bottom, left = box
+                width = right - left
+                height = bottom - top
+                
+                if width >= 100 and height >= 100:
+                    aspect_ratio = width / height
+                    if 0.6 <= aspect_ratio <= 1.4:
+                        filtered_boxes.append(box)
+        except Exception as e:
+            print(f"[DETECTION] CNN failed: {e}")
+    
+    # Urutkan berdasarkan size (yang terbesar pertama)
+    filtered_boxes.sort(key=lambda box: (box[2]-box[0])*(box[3]-box[1]), reverse=True)
+    
+    return filtered_boxes
+
+def validate_dataset_quality():
+    """
+    Validasi kualitas dataset yang ada
+    """
+    print("[QUALITY] Validating dataset quality...")
+    
+    sources = fetch_member_images()
+    poor_quality_count = 0
+    
+    for member_id, gym_member_id, first_name, last_name, full_url in sources:
+        try:
+            # Load encoding dari database
+            encoding = load_encoding_from_db(member_id)
+            
+            if encoding is not None:
+                # Validasi kualitas encoding
+                if not is_good_quality_encoding(encoding):
+                    print(f"[QUALITY] Poor quality encoding for member_id={member_id}")
+                    poor_quality_count += 1
+                    
+                    # Option: Hapus encoding yang poor quality
+                    # save_encoding_to_db(member_id, None)  # Uncomment untuk hapus
+                    
+        except Exception as e:
+            print(f"[QUALITY] Error validating member_id={member_id}: {e}")
+    
+    print(f"[QUALITY] Validation complete. Poor quality encodings: {poor_quality_count}")
+    return poor_quality_count
+
+# Jalankan validasi saat startup
+# validate_dataset_quality()
+    # ==== FUNGSI VALIDASI TAMBAHAN END ====
 
 # ===================== Flask App =====================
 app = Flask(__name__)
@@ -1375,6 +1562,12 @@ INDEX_HTML = """
     .popup-notification.denied {
       background: linear-gradient(135deg, #ef4444, #dc2626);
       border: 3px solid #f87171;
+    }
+    
+    .popup-notification.info {
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      border: 3px solid #fbbf24;
+      color: #1f2937;
     }
     
     .popup-notification.hidden {
@@ -1739,7 +1932,7 @@ INDEX_HTML = """
   <div class="container">
     <div class="header">
       <h1>Face Recognition FTL GYM</h1>
-      <p style="color: var(--text-secondary); margin: 0;">Powered by Horrizon</p>
+      <p style="color: var(--text-secondary); margin: 0;">Powered by Horizon</p>
   </div>
     
     <div class="controls">
@@ -2232,6 +2425,10 @@ INDEX_HTML = """
         popup.classList.add('denied');
         popupIcon.textContent = '❌';
         popupTitle.textContent = 'ACCESS DENIED';
+      } else if (popupInfo.style === 'INFO') {
+        popup.classList.add('info');
+        popupIcon.textContent = 'ℹ️';
+        popupTitle.textContent = 'INFO';
       }
       
       // Set member information
@@ -2569,6 +2766,261 @@ def update_door_id():
         print(f"[DOOR] Error updating door ID: {e}")
         return {"success": False, "error": str(e)}
 
+# @app.route("/recognize", methods=["POST"])
+# def recognize():
+#     try:
+#         from flask import request
+        
+#         if 'frame' not in request.files:
+#             return {"success": False, "error": "No frame provided"}
+        
+#         file = request.files['frame']
+#         if file.filename == '':
+#             return {"success": False, "error": "No file selected"}
+        
+#         # Read image data
+#         image_data = file.read()
+#         nparr = np.frombuffer(image_data, np.uint8)
+#         frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+#         if frame_bgr is None:
+#             return {"success": False, "error": "Invalid image"}
+        
+#         # Resize image for faster processing if too large
+#         height, width = frame_bgr.shape[:2]
+#         if width > 640:  # If image is larger than 640px, resize it
+#             scale = 640 / width
+#             new_width = 640
+#             new_height = int(height * scale)
+#             frame_bgr = cv2.resize(frame_bgr, (new_width, new_height))
+#             print(f"[PERF] Resized image from {width}x{height} to {new_width}x{new_height}")
+        
+#         # Convert to RGB for face detection
+#         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        
+#         # Detect faces and get recognition results
+#         with recognizer.lock:
+#             known_encs = recognizer.known_encodings
+#             known_names = recognizer.known_names
+#             known_ids = recognizer.known_ids
+        
+#         # For GCP: Load encodings on-demand if not loaded
+#         if not known_encs:
+#             print(f"[RECOGNIZE] No known encodings loaded. Total: {len(known_encs)}. Attempting to load on-demand...")
+#             try:
+#                 recognizer.reload()
+#                 known_encs = recognizer.known_encodings
+#                 known_names = recognizer.known_names
+#                 known_ids = recognizer.known_ids
+#                 print(f"[RECOGNIZE] On-demand load completed. Loaded: {len(known_encs)} encodings")
+#             except Exception as e:
+#                 print(f"[RECOGNIZE] On-demand load failed: {e}")
+#                 return {"success": True, "faces": [], "debug": "Failed to load encodings on-demand", "error": str(e)}
+        
+#         if not known_encs:
+#             print(f"[RECOGNIZE] Still no known encodings after on-demand load. Total: {len(known_encs)}")
+#             return {"success": True, "faces": [], "debug": "No known encodings loaded after on-demand attempt", "total_encodings": len(known_encs)}
+        
+#         # Detect faces with fallback pipeline
+#         boxes = safe_face_recognition("face_locations", rgb, model="hog", number_of_times_to_upsample=0)
+#         used_image = rgb
+#         if not boxes:
+#             boxes = safe_face_recognition("face_locations", rgb, model="hog", number_of_times_to_upsample=1)
+#         if not boxes:
+#             ycrcb = cv2.cvtColor(rgb, cv2.COLOR_RGB2YCrCb)
+#             y, cr, cb = cv2.split(ycrcb)
+#             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+#             y_eq = clahe.apply(y)
+#             ycrcb_eq = cv2.merge([y_eq, cr, cb])
+#             rgb_eq = cv2.cvtColor(ycrcb_eq, cv2.COLOR_YCrCb2RGB)
+#             used_image = rgb_eq
+#             boxes = safe_face_recognition("face_locations", rgb_eq, model="hog", number_of_times_to_upsample=1)
+#         if not boxes:
+#             try:
+#                 boxes = safe_face_recognition("face_locations", rgb, model="cnn", number_of_times_to_upsample=1)
+#                 used_image = rgb
+#             except Exception:
+#                 boxes = []
+        
+#         if not boxes:
+#             return {"success": True, "faces": [], "debug": "No faces detected after fallback"}
+        
+#         # Sort faces by size (largest first) and take only the first one
+#         face_sizes = [(i, (box[2] - box[0]) * (box[3] - box[1])) for i, box in enumerate(boxes)]
+#         face_sizes.sort(key=lambda x: x[1], reverse=True)  # Sort by area, largest first
+        
+#         # Take only the largest face (most front)
+#         largest_face_idx = face_sizes[0][0]
+#         largest_box = boxes[largest_face_idx]
+        
+#         # Generate encoding only for the largest face on the image used for detection
+#         encs = safe_face_recognition("face_encodings", used_image, [largest_box])
+        
+#         if not encs:
+#             return {"success": True, "faces": [], "debug": "No face encoding generated"}
+        
+#         faces = []
+#         # Process only the largest face
+#         (top, right, bottom, left) = largest_box
+#         enc = encs[0]  # Only one encoding for the largest face
+        
+#         distances = safe_face_recognition("face_distance", known_encs, enc)
+#         if len(distances) == 0:
+#             name = "Unknown"
+#             confidence = 1.0
+#             member_id = None
+#         else:
+#             # Compute best and second-best distances
+#             order = np.argsort(distances)
+#             best_idx = int(order[0])
+#             best_dist = float(distances[best_idx])
+#             second_dist = float(distances[order[1]]) if len(distances) > 1 else 1.0
+#             margin_ok = (second_dist - best_dist) >= TOP2_MARGIN
+#             if best_dist <= TOLERANCE and margin_ok:
+#                 name = known_names[best_idx]
+#                 member_id = known_ids[best_idx]
+#                 confidence = best_dist
+#             else:
+#                 name = "Unknown"
+#                 member_id = None
+#                 confidence = best_dist
+        
+#         # Get device ID for cooldown check
+#         device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
+
+#         # Require consecutive frame confirmations
+#         confirmed = recognizer.update_prediction_streak(device_id, name)
+#         if name != "Unknown" and not confirmed:
+#             faces.append({
+#                 "x": int(left),
+#                 "y": int(top),
+#                 "width": int(right - left),
+#                 "height": int(bottom - top),
+#                 "name": "Verifying...",
+#                 "confidence": confidence,
+#             })
+#             return {
+#                 "success": True,
+#                 "faces": faces,
+#                 "cooldown": None,
+#                 "popup": {
+#                     "show": True,
+#                     "style": "INFO",
+#                     "member_name": name,
+#                     "member_id": None,
+#                     "message": "Verifying identity..."
+#                 },
+#                 "debug": "Waiting for consecutive frame confirmation"
+#             }
+
+#         # Short-circuit if device is in denied cooldown window
+#         if recognizer.is_in_denied_cooldown(device_id):
+#             denied_remaining = recognizer.get_denied_remaining(device_id)
+#             faces.append({
+#                 "x": int(left),
+#                 "y": int(top),
+#                 "width": int(right - left),
+#                 "height": int(bottom - top),
+#                 "name": "Access Denied",
+#                 "confidence": confidence,
+#             })
+#             return {
+#                 "success": True,
+#                 "faces": faces,
+#                 "cooldown": None,
+#                 "popup": {
+#                     "show": True,
+#                     "style": "DENIED",
+#                     "member_name": name,
+#                     "member_id": None,
+#                     "message": f"Please wait {denied_remaining:.1f}s before retry"
+#                 },
+#                 "debug": "Denied cooldown active"
+#             }
+        
+#         # Always add face data for display (bounding box should always show)
+#         face_data = {
+#             "x": int(left),
+#             "y": int(top),
+#             "width": int(right - left),
+#             "height": int(bottom - top),
+#             "name": name,
+#             "confidence": confidence,
+#             "member_id": member_id
+#         }
+        
+#         # Process gym gate if member is recognized
+#         popup_info = None
+#         if member_id and confidence <= TOLERANCE:
+#             # Check cooldown for this specific device
+#             if recognizer.is_in_cooldown(device_id):
+#                 cooldown_remaining = recognizer.get_cooldown_remaining(device_id)
+#                 print(f"[GYM] ⏳ Device {device_id} cooldown active: {cooldown_remaining:.1f}s remaining")
+#                 # Add cooldown info to face data
+#                 face_data["cooldown"] = True
+#                 face_data["cooldown_remaining"] = cooldown_remaining
+#             else:
+#                 # Get gym_member_id for API call
+#                 gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
+#                 if gym_member_id:
+#                     # Get device-specific door ID
+#                     current_door_id = device_door_ids.get(device_id, GYM_DOOR_ID)
+                    
+#                     print(f"[GYM] Using door ID {current_door_id} for device {device_id}")
+                    
+#                     gym_result = process_member_detection_with_door(gym_member_id, name, current_door_id)
+#                     if gym_result["success"]:
+#                         print(f"[GYM] ✅ {gym_result['message']}")
+#                         # Mark successful login to start cooldown for this device only
+#                         recognizer.set_successful_login(name, device_id)
+#                     else:
+#                         print(f"[GYM] ❌ {gym_result['error']}")
+#                         # Set denied cooldown to prevent immediate re-grant on next frame
+#                         recognizer.set_denied(name, gym_result.get('error') or 'Access denied', device_id)
+                    
+#                     # Get popup info from gym result and add cooldown duration
+#                     popup_info = gym_result.get("popup")
+#                     if popup_info and popup_info.get("style") == "GRANTED":
+#                         popup_info["cooldown_duration"] = recognizer.cooldown_duration
+#                 else:
+#                     print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
+                
+#                 # Fallback popup for testing if no gym popup
+#                 if not popup_info:
+#                     print(f"[DEBUG] Creating fallback popup for {name}")
+#                     popup_info = {
+#                         "show": True,
+#                         "style": "GRANTED",
+#                         "member_name": name,
+#                         "member_id": recognizer.gym_member_id_mapping.get(member_id),
+#                         "message": f"Access Granted for {name}"
+#                     }
+        
+#         # Always add face data to faces array
+#         faces.append(face_data)
+        
+#         # Add cooldown info if this device is in cooldown
+#         cooldown_info = None
+#         if recognizer.is_in_cooldown(device_id):
+#             cooldown_remaining = recognizer.get_cooldown_remaining(device_id)
+#             cooldown_info = {
+#                 "show": True,
+#                 "remaining": cooldown_remaining
+#             }
+#             print(f"[COOLDOWN] Device {device_id} showing cooldown: {cooldown_remaining:.1f}s remaining")
+        
+#         return {
+#             "success": True, 
+#             "faces": faces, 
+#             "cooldown": cooldown_info,
+#             "popup": popup_info,
+#             "debug": f"Processed {len(faces)} faces"
+#         }
+        
+#     except Exception as e:
+#         print(f"[RECOG] Error: {e}")
+#         return {"success": False, "error": str(e)}
+
 @app.route("/recognize", methods=["POST"])
 def recognize():
     try:
@@ -2589,182 +3041,108 @@ def recognize():
         if frame_bgr is None:
             return {"success": False, "error": "Invalid image"}
         
-        # Resize image for faster processing if too large
+        # Resize untuk performance
         height, width = frame_bgr.shape[:2]
-        if width > 640:  # If image is larger than 640px, resize it
+        if width > 640:
             scale = 640 / width
             new_width = 640
             new_height = int(height * scale)
             frame_bgr = cv2.resize(frame_bgr, (new_width, new_height))
-            print(f"[PERF] Resized image from {width}x{height} to {new_width}x{new_height}")
         
-        # Convert to RGB for face detection
+        # Convert to RGB
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         
-        # Detect faces and get recognition results
-        with recognizer.lock:
-            known_encs = recognizer.known_encodings
-            known_names = recognizer.known_names
-            known_ids = recognizer.known_ids
-        
-        # For GCP: Load encodings on-demand if not loaded
-        if not known_encs:
-            print(f"[RECOGNIZE] No known encodings loaded. Total: {len(known_encs)}. Attempting to load on-demand...")
-            try:
-                recognizer.reload()
-                known_encs = recognizer.known_encodings
-                known_names = recognizer.known_names
-                known_ids = recognizer.known_ids
-                print(f"[RECOGNIZE] On-demand load completed. Loaded: {len(known_encs)} encodings")
-            except Exception as e:
-                print(f"[RECOGNIZE] On-demand load failed: {e}")
-                return {"success": True, "faces": [], "debug": "Failed to load encodings on-demand", "error": str(e)}
-        
-        if not known_encs:
-            print(f"[RECOGNIZE] Still no known encodings after on-demand load. Total: {len(known_encs)}")
-            return {"success": True, "faces": [], "debug": "No known encodings loaded after on-demand attempt", "total_encodings": len(known_encs)}
-        
-        # Detect faces with faster model
-        boxes = safe_face_recognition("face_locations", rgb, model="hog", number_of_times_to_upsample=0)
+        # Enhanced face detection
+        boxes = enhanced_face_detection(rgb)
         
         if not boxes:
-            return {"success": True, "faces": [], "debug": "No faces detected"}
+            return {"success": True, "faces": [], "debug": "No qualified faces detected"}
         
-        # Sort faces by size (largest first) and take only the first one
-        face_sizes = [(i, (box[2] - box[0]) * (box[3] - box[1])) for i, box in enumerate(boxes)]
-        face_sizes.sort(key=lambda x: x[1], reverse=True)  # Sort by area, largest first
+        # Ambil hanya wajah terbesar
+        largest_box = boxes[0]
+        top, right, bottom, left = largest_box
         
-        # Take only the largest face (most front)
-        largest_face_idx = face_sizes[0][0]
-        largest_box = boxes[largest_face_idx]
-        
-        # Generate encoding only for the largest face
+        # Generate encoding
         encs = safe_face_recognition("face_encodings", rgb, [largest_box])
         
         if not encs:
             return {"success": True, "faces": [], "debug": "No face encoding generated"}
         
-        faces = []
-        # Process only the largest face
-        (top, right, bottom, left) = largest_box
-        enc = encs[0]  # Only one encoding for the largest face
+        enc = encs[0]
         
-        distances = safe_face_recognition("face_distance", known_encs, enc)
-        if len(distances) == 0:
-            name = "Unknown"
-            confidence = 1.0
-            member_id = None
-        else:
-            idx = int(np.argmin(distances))
-            confidence = float(distances[idx])
-            name = known_names[idx] if confidence <= TOLERANCE else "Unknown"
-            member_id = known_ids[idx] if confidence <= TOLERANCE else None
+        # Enhanced validation
+        with recognizer.lock:
+            known_encs = recognizer.known_encodings
+            known_names = recognizer.known_names
+            known_ids = recognizer.known_ids
         
-        # Get device ID for cooldown check
+        name, confidence, member_id = enhanced_face_validation(enc, known_encs, known_names, known_ids)
+        
+        # Get device ID
         device_id = request.headers.get('X-Device-ID', f"{request.remote_addr}_{request.headers.get('User-Agent', '')[:50]}")
 
-        # Short-circuit if device is in denied cooldown window
-        if recognizer.is_in_denied_cooldown(device_id):
-            denied_remaining = recognizer.get_denied_remaining(device_id)
-            faces.append({
-                "x": int(left),
-                "y": int(top),
-                "width": int(right - left),
-                "height": int(bottom - top),
-                "name": "Access Denied",
-                "confidence": confidence,
-            })
+        # Consecutive frame confirmation dengan threshold lebih tinggi
+        confirmed = recognizer.update_prediction_streak(device_id, name)
+        
+        faces = [{
+            "x": int(left),
+            "y": int(top),
+            "width": int(right - left),
+            "height": int(bottom - top),
+            "name": "Verifying..." if (name != "Unknown" and not confirmed) else name,
+            "confidence": confidence,
+            "member_id": member_id
+        }]
+        
+        # Jika belum confirmed, return status verifying
+        if name != "Unknown" and not confirmed:
             return {
                 "success": True,
                 "faces": faces,
                 "cooldown": None,
                 "popup": {
                     "show": True,
-                    "style": "DENIED",
+                    "style": "INFO",
                     "member_name": name,
                     "member_id": None,
-                    "message": f"Please wait {denied_remaining:.1f}s before retry"
+                    "message": "Verifying identity..."
                 },
-                "debug": "Denied cooldown active"
+                "debug": f"Waiting for consecutive frame confirmation ({recognizer.device_prediction_streak.get(device_id, {}).get('count', 0)}/{REQUIRED_CONSISTENT_FRAMES})"
             }
         
-        # Always add face data for display (bounding box should always show)
-        face_data = {
-            "x": int(left),
-            "y": int(top),
-            "width": int(right - left),
-            "height": int(bottom - top),
-            "name": name,
-            "confidence": confidence,
-            "member_id": member_id
-        }
-        
-        # Process gym gate if member is recognized
+        # Process gym gate jika confirmed
         popup_info = None
-        if member_id and confidence <= TOLERANCE:
-            # Check cooldown for this specific device
+        if member_id and confidence <= TOLERANCE and confirmed:
             if recognizer.is_in_cooldown(device_id):
                 cooldown_remaining = recognizer.get_cooldown_remaining(device_id)
-                print(f"[GYM] ⏳ Device {device_id} cooldown active: {cooldown_remaining:.1f}s remaining")
-                # Add cooldown info to face data
+                face_data = faces[0]
                 face_data["cooldown"] = True
                 face_data["cooldown_remaining"] = cooldown_remaining
             else:
-                # Get gym_member_id for API call
                 gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
                 if gym_member_id:
-                    # Get device-specific door ID
                     current_door_id = device_door_ids.get(device_id, GYM_DOOR_ID)
-                    
-                    print(f"[GYM] Using door ID {current_door_id} for device {device_id}")
-                    
                     gym_result = process_member_detection_with_door(gym_member_id, name, current_door_id)
+                    
                     if gym_result["success"]:
-                        print(f"[GYM] ✅ {gym_result['message']}")
-                        # Mark successful login to start cooldown for this device only
                         recognizer.set_successful_login(name, device_id)
                     else:
-                        print(f"[GYM] ❌ {gym_result['error']}")
-                        # Set denied cooldown to prevent immediate re-grant on next frame
                         recognizer.set_denied(name, gym_result.get('error') or 'Access denied', device_id)
                     
-                    # Get popup info from gym result and add cooldown duration
                     popup_info = gym_result.get("popup")
-                    if popup_info and popup_info.get("style") == "GRANTED":
-                        popup_info["cooldown_duration"] = recognizer.cooldown_duration
-                else:
-                    print(f"[GYM] ❌ No gym_member_id found for member_id={member_id}")
-                
-                # Fallback popup for testing if no gym popup
-                if not popup_info:
-                    print(f"[DEBUG] Creating fallback popup for {name}")
-                    popup_info = {
-                        "show": True,
-                        "style": "GRANTED",
-                        "member_name": name,
-                        "member_id": recognizer.gym_member_id_mapping.get(member_id),
-                        "message": f"Access Granted for {name}"
-                    }
         
-        # Always add face data to faces array
-        faces.append(face_data)
-        
-        # Add cooldown info if this device is in cooldown
+        # Cooldown info
         cooldown_info = None
         if recognizer.is_in_cooldown(device_id):
             cooldown_remaining = recognizer.get_cooldown_remaining(device_id)
-            cooldown_info = {
-                "show": True,
-                "remaining": cooldown_remaining
-            }
-            print(f"[COOLDOWN] Device {device_id} showing cooldown: {cooldown_remaining:.1f}s remaining")
+            cooldown_info = {"show": True, "remaining": cooldown_remaining}
         
         return {
             "success": True, 
             "faces": faces, 
             "cooldown": cooldown_info,
             "popup": popup_info,
-            "debug": f"Processed {len(faces)} faces"
+            "debug": f"Processed with enhanced validation. Confidence: {confidence:.3f}"
         }
         
     except Exception as e:
@@ -2807,6 +3185,31 @@ def regenerate_enc_route():
             }
         else:
             return {"success": False, "error": result["error"]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.route("/test_accuracy")
+def test_accuracy_route():
+    """
+    Test endpoint untuk memeriksa akurasi recognition
+    """
+    try:
+        # Test dengan sample image atau known member
+        # Implementasi sesuai kebutuhan testing
+        
+        return {
+            "success": True,
+            "current_settings": {
+                "tolerance": TOLERANCE,
+                "top2_margin": TOP2_MARGIN,
+                "consistent_frames": REQUIRED_CONSISTENT_FRAMES
+            },
+            "recommendations": [
+                "Tolerance 0.50-0.60 untuk mengurangi false positive",
+                "Top2 margin 0.10-0.15 untuk memastikan perbedaan jelas",
+                "3-5 consecutive frames untuk konfirmasi"
+            ]
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
