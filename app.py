@@ -30,15 +30,15 @@ MYSQL_DATABASE = os.getenv("DB_NAME", "")
 MYSQL_USER = os.getenv("DB_USER", "")
 MYSQL_PASSWORD = os.getenv("DB_PASSWORD", "")
 
-TOLERANCE = 0.45  # tighten threshold to reduce false positives
-TOP2_MARGIN = 0.08  # require best vs second-best distance gap
+TOLERANCE = 0.40  # tighten threshold to reduce false positives
+TOP2_MARGIN = 0.06  # require best vs second-best distance gap
 REQUIRED_CONSISTENT_FRAMES = 2  # require N consecutive frames for same identity
 
 # Jika ingin batasi request gambar (detik)
 REQUEST_TIMEOUT = 15
 
 # Ukuran batch regenerasi encoding
-BATCH_SIZE = int(os.getenv("ENC_BATCH_SIZE", "85"))
+BATCH_SIZE = int(os.getenv("ENC_BATCH_SIZE", "50"))
 
 # Redis Configuration
 REDIS_HOST = "localhost "
@@ -276,41 +276,36 @@ def get_conn():
 
 def fetch_member_images() -> List[Tuple[int, str, str, str]]:
     """
-    Ambil (member_id, first_name, last_name, full_url) untuk foto terbaru per member yang aktif.
-    Kita ambil semua kemudian reduce ke 'latest per member_id'.
+    Ambil (member_id, first_name, last_name, full_url) untuk foto terbaru per member Staff Membership (EA1M-FTL).
     """
     sql = """
+    WITH latest_profile AS (
+      SELECT
+        f2.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY f2.member_id
+          ORDER BY f2.created_at DESC, f2.id DESC
+        ) AS rn
+      FROM member_file f2
+      WHERE (f2.status IS NULL OR f2.status = 1)
+        AND (f2.file_type_id IS NULL OR f2.file_type_id = 1)
+        AND f2.title = 'Profile'
+        AND f2.file_base_url LIKE 'https://ftlhorizon.com/%'
+    )
     SELECT
-        m.id AS member_id,
-        m.member_id AS gym_member_id,
-        COALESCE(m.first_name, CONCAT('Member_', m.id)) AS first_name,
-        COALESCE(m.last_name, '') AS last_name,
-        CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url,
-        f.created_at
+      m.id AS member_pk,
+      m.member_id AS gym_member_id,
+      COALESCE(m.first_name, CONCAT('Member_', m.id)) AS first_name,
+      COALESCE(m.last_name, '') AS last_name,
+      CONCAT_WS('', f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url
     FROM member m
-    JOIN member_file f ON f.member_id = m.id
+    JOIN member_package mp ON mp.member_id = m.id
+    JOIN package p        ON p.id = mp.package_id AND p.code = 'EA1M-FTL'
+    JOIN latest_profile f ON f.member_id = m.id AND f.rn = 1
     WHERE m.status = 1
-      AND (f.status IS NULL OR f.status = 1)
-      AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-      AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
-      AND EXISTS (
-          SELECT 1
-          FROM member_package mp
-          JOIN package p ON p.id = mp.package_id
-          WHERE (
-              mp.member_id = m.id
-              OR mp.member_id = m.member_id
-              OR TRIM(mp.member_id) = CAST(m.id AS CHAR)
-              OR TRIM(mp.member_id) = CAST(m.member_id AS CHAR)
-          )
-            AND (mp.status = 1 OR mp.status IS NULL)
-            AND (mp.start_date  IS NULL OR mp.start_date  <= NOW())
-            AND (mp.expired_date IS NULL OR mp.expired_date >= NOW())
-            AND (p.description = 'Staff Membership' OR p.code = 'EA1M-FTL')
-      )
-    ORDER BY m.id ASC, f.created_at DESC
+    ORDER BY m.id ASC
     """
-    rows: List[Tuple[int, int, str, str, str, str]] = []
+    rows: List[Tuple[int, int, str, str, str]] = []
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -322,156 +317,9 @@ def fetch_member_images() -> List[Tuple[int, str, str, str]]:
         print(f"[DB] Error: {e}")
         return []
 
-    latest_per_member: "OrderedDict[int, Tuple[int,int,str,str,str]]" = OrderedDict()
-    for member_id, gym_member_id, first_name, last_name, full_url, created_at in rows:
-        if member_id not in latest_per_member:
-            latest_per_member[member_id] = (member_id, gym_member_id, first_name, last_name, full_url)
-    return list(latest_per_member.values())
+    return [(member_id, gym_member_id, first_name, last_name, full_url) for member_id, gym_member_id, first_name, last_name, full_url in rows]
 
 # ===================== Image / Encoding =====================
-def regenerate_member_enc(member_id: int) -> dict:
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url
-            FROM member m
-            JOIN member_file f ON f.member_id = m.id
-            WHERE m.status = 1
-              AND m.id = %s
-              AND (f.status IS NULL OR f.status = 1)
-              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
-              AND EXISTS (
-                  SELECT 1
-                  FROM member_package mp
-                  JOIN package p ON p.id = mp.package_id
-                  WHERE (
-                      mp.member_id = m.id
-                      OR mp.member_id = m.member_id
-                      OR TRIM(mp.member_id) = CAST(m.id AS CHAR)
-                      OR TRIM(mp.member_id) = CAST(m.member_id AS CHAR)
-                  )
-                    AND (mp.status = 1 OR mp.status IS NULL)
-                    AND (mp.start_date  IS NULL OR mp.start_date  <= NOW())
-                    AND (mp.expired_date IS NULL OR mp.expired_date >= NOW())
-                    AND (p.description = 'Staff Membership' OR p.code = 'EA1M-FTL')
-              )
-            ORDER BY f.created_at DESC
-            LIMIT 1
-            """,
-            (member_id,)
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not row:
-            return {"success": False, "error": "Image not found for member"}
-
-        full_url = row[0]
-        img = url_to_rgb_array(full_url)
-        boxes = safe_face_recognition("face_locations", img, model="hog")
-        if not boxes:
-            return {"success": False, "error": "No face detected"}
-        encs = safe_face_recognition("face_encodings", img, known_face_locations=boxes)
-        if not encs:
-            return {"success": False, "error": "Failed to compute encoding"}
-        encoding = encs[0]
-
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-            encoding_bytes = encoding.tobytes()
-            cur.execute("UPDATE member SET enc = %s WHERE id = %s", (encoding_bytes, member_id))
-            conn.commit()
-            cur.close()
-            conn.close()
-        finally:
-            del img
-            del boxes
-            del encs
-            force_garbage_collection()
-
-        if REDIS_ENABLED:
-            invalidate_encodings_cache()
-        recognizer.reload()
-        return {"success": True, "member_id": member_id}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def find_member_ids_by_name(first_name: str = None, last_name: str = None) -> dict:
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-
-        where_name = []
-        params = []
-        if first_name:
-            where_name.append("LOWER(m.first_name) = LOWER(%s)")
-            params.append(first_name)
-        if last_name:
-            where_name.append("LOWER(m.last_name) = LOWER(%s)")
-            params.append(last_name)
-        name_clause = (" AND " + " AND ".join(where_name)) if where_name else ""
-
-        cur.execute(
-            f"""
-            SELECT m.id
-            FROM member m
-            JOIN member_file f ON f.member_id = m.id
-            WHERE m.status = 1
-              AND (f.status IS NULL OR f.status = 1)
-              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
-              {name_clause}
-            GROUP BY m.id
-            """,
-            tuple(params),
-        )
-        ids_without_staff = [r[0] for r in cur.fetchall()]
-
-        cur.execute(
-            f"""
-            SELECT m.id
-            FROM member m
-            JOIN member_file f ON f.member_id = m.id
-            WHERE m.status = 1
-              AND (f.status IS NULL OR f.status = 1)
-              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
-              AND EXISTS (
-                  SELECT 1 FROM member_package mp
-                  JOIN package p ON p.id = mp.package_id
-                  WHERE (
-                      mp.member_id = m.id
-                      OR mp.member_id = m.member_id
-                      OR TRIM(mp.member_id) = CAST(m.id AS CHAR)
-                      OR TRIM(mp.member_id) = CAST(m.member_id AS CHAR)
-                  )
-                    AND (mp.status = 1 OR mp.status IS NULL)
-                    AND (mp.start_date IS NULL OR mp.start_date <= NOW())
-                    AND (mp.expired_date IS NULL OR mp.expired_date >= NOW())
-                    AND (p.description = 'Staff Membership' OR p.code = 'EA1M-FTL')
-              )
-              {name_clause}
-            GROUP BY m.id
-            """,
-            tuple(params),
-        )
-        ids_with_staff = [r[0] for r in cur.fetchall()]
-
-        result = {
-            "success": True,
-            "ids_without_staff": ids_without_staff,
-            "ids_with_staff": ids_with_staff,
-            "difference_not_staff": [i for i in ids_without_staff if i not in ids_with_staff],
-        }
-        cur.close()
-        conn.close()
-        return result
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 def url_to_rgb_array(url: str) -> np.ndarray:
     """
     Download image from URL (supports querystrings), return RGB numpy array.
@@ -576,46 +424,78 @@ def load_encoding_from_db(member_id: int) -> np.ndarray:
 
  
 
-def regenerate_missing_encodings(batch_size: int = BATCH_SIZE):
+def regenerate_missing_encodings(batch_size: int = BATCH_SIZE, regenerate_all: bool = False):
     """
-    Regenerate ENC for all members who don't have valid encoding in database
+    Regenerate ENC in batches.
+    If regenerate_all is True, process all active members regardless of existing enc.
+    Otherwise, only members missing or with invalid enc are processed.
     """
-    print(f"[ENC] Starting regeneration in batches of {batch_size}...")
+    mode_text = "all members" if regenerate_all else "members missing encodings"
+    print(f"[ENC] Starting regeneration for {mode_text} in batches of {batch_size}...")
     try:
         total_success = 0
         total_error = 0
         batch_index = 0
+        total_to_process = None
+
+        try:
+            conn_count = get_conn()
+            cur_count = conn_count.cursor()
+            count_sql = """
+                SELECT COUNT(*)
+                FROM member m
+                JOIN member_package mp ON mp.member_id = m.id
+                JOIN package p ON p.id = mp.package_id
+                WHERE p.code = 'EA1M-FTL'
+                  AND m.status = 1
+            """
+            params_count = []
+            if not regenerate_all:
+                count_sql += "\n                  AND (m.enc IS NULL OR LENGTH(m.enc) != 1024)\n"
+            cur_count.execute(count_sql, params_count)
+            row = cur_count.fetchone()
+            total_to_process = int(row[0]) if row else 0
+            cur_count.close()
+            conn_count.close()
+            print(f"[ENC] Total members to process: {total_to_process}")
+        except Exception as e:
+            print(f"[ENC] Unable to compute total to process: {e}")
+            total_to_process = None
+
+        processed_total = 0
         while True:
             conn = get_conn()
             cur = conn.cursor()
             base_sql = """
-                SELECT m.id, m.member_id, COALESCE(m.first_name, CONCAT('Member_', m.id)) as first_name,
-                       COALESCE(m.last_name, '') as last_name,
-                       CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url
+                WITH latest_profile AS (
+                  SELECT
+                    f2.*,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY f2.member_id
+                      ORDER BY f2.created_at DESC, f2.id DESC
+                    ) AS rn
+                  FROM member_file f2
+                  WHERE (f2.status IS NULL OR f2.status = 1)
+                    AND (f2.file_type_id IS NULL OR f2.file_type_id = 1)
+                    AND f2.title = 'Profile'
+                    AND f2.file_base_url LIKE 'https://ftlhorizon.com/%'
+                )
+                SELECT 
+                  m.id AS member_pk,
+                  m.member_id AS gym_member_id,
+                  COALESCE(m.first_name, CONCAT('Member_', m.id)) AS first_name,
+                  COALESCE(m.last_name, '') AS last_name,
+                  CONCAT_WS('', f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url
                 FROM member m
-                JOIN member_file f ON f.member_id = m.id
-                WHERE m.status = 1
-                  AND (f.status IS NULL OR f.status = 1)
-                  AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-                  AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
-                  AND EXISTS (
-                      SELECT 1
-                      FROM member_package mp
-                      JOIN package p ON p.id = mp.package_id
-                      WHERE (
-                          mp.member_id = m.id
-                          OR mp.member_id = m.member_id
-                          OR TRIM(mp.member_id) = CAST(m.id AS CHAR)
-                          OR TRIM(mp.member_id) = CAST(m.member_id AS CHAR)
-                      )
-                        AND (mp.status = 1 OR mp.status IS NULL)
-                        AND (mp.start_date  IS NULL OR mp.start_date  <= NOW())
-                        AND (mp.expired_date IS NULL OR mp.expired_date >= NOW())
-                        AND (p.description = 'Staff Membership' OR p.code = 'EA1M-FTL')
-                  )
-                  AND (m.enc IS NULL OR LENGTH(m.enc) != 1024)
-            """
+                JOIN member_package mp ON mp.member_id = m.id
+                JOIN package p ON p.id = mp.package_id
+                JOIN latest_profile f ON f.member_id = m.id AND f.rn = 1
+                WHERE p.code = 'EA1M-FTL'
+                  AND m.status = 1
+ """
             params = []
+            if not regenerate_all:
+                base_sql += "\n                  AND (m.enc IS NULL OR LENGTH(m.enc) != 1024)\n"
             if failed_404_member_ids:
                 placeholders = ",".join(["%s"] * len(failed_404_member_ids))
                 base_sql += f" AND m.id NOT IN ({placeholders})"
@@ -628,7 +508,7 @@ def regenerate_missing_encodings(batch_size: int = BATCH_SIZE):
             conn.close()
 
             if not members:
-                print("[ENC] No more members without valid encodings")
+                print("[ENC] No more members to process")
                 break
 
             batch_index += 1
@@ -642,28 +522,64 @@ def regenerate_missing_encodings(batch_size: int = BATCH_SIZE):
                     boxes = safe_face_recognition("face_locations", img, model="hog")
                     if not boxes:
                         batch_error += 1
+                        processed_total += 1
+                        if total_to_process and total_to_process > 0:
+                            pct = int(processed_total * 100 / total_to_process)
+                            print(f"[ENC] Progress {processed_total}/{total_to_process} ({pct}%) member_id={member_id} no-face")
+                        else:
+                            print(f"[ENC] Progress {processed_total} processed member_id={member_id} no-face")
                         continue
                     encoding = safe_face_recognition("face_encodings", img, known_face_locations=[boxes[0]])
                     if not encoding:
                         batch_error += 1
+                        processed_total += 1
+                        if total_to_process and total_to_process > 0:
+                            pct = int(processed_total * 100 / total_to_process)
+                            print(f"[ENC] Progress {processed_total}/{total_to_process} ({pct}%) member_id={member_id} encode-failed")
+                        else:
+                            print(f"[ENC] Progress {processed_total} processed member_id={member_id} encode-failed")
                         continue
                     save_encoding_to_db(member_id, encoding[0])
                     batch_success += 1
+                    processed_total += 1
+                    if total_to_process and total_to_process > 0:
+                        pct = int(processed_total * 100 / total_to_process)
+                        print(f"[ENC] Progress {processed_total}/{total_to_process} ({pct}%) member_id={member_id} success")
+                    else:
+                        print(f"[ENC] Progress {processed_total} processed member_id={member_id} success")
                 except requests.exceptions.HTTPError as e:
                     status = getattr(e.response, 'status_code', None)
                     if status == 404 or '404' in str(e):
                         failed_404_member_ids.add(member_id)
                         batch_error += 1
+                        processed_total += 1
+                        if total_to_process and total_to_process > 0:
+                            pct = int(processed_total * 100 / total_to_process)
+                            print(f"[ENC] Progress {processed_total}/{total_to_process} ({pct}%) member_id={member_id} http-404")
+                        else:
+                            print(f"[ENC] Progress {processed_total} processed member_id={member_id} http-404")
                         continue
                     print(f"[ENC] HTTP error for member_id={member_id}: {e}")
                     batch_error += 1
+                    processed_total += 1
+                    if total_to_process and total_to_process > 0:
+                        pct = int(processed_total * 100 / total_to_process)
+                        print(f"[ENC] Progress {processed_total}/{total_to_process} ({pct}%) member_id={member_id} http-error")
+                    else:
+                        print(f"[ENC] Progress {processed_total} processed member_id={member_id} http-error")
                 except Exception as e:
                     print(f"[ENC] Error regenerating encoding for member_id={member_id}: {e}")
                     batch_error += 1
+                    processed_total += 1
+                    if total_to_process and total_to_process > 0:
+                        pct = int(processed_total * 100 / total_to_process)
+                        print(f"[ENC] Progress {processed_total}/{total_to_process} ({pct}%) member_id={member_id} error")
+                    else:
+                        print(f"[ENC] Progress {processed_total} processed member_id={member_id} error")
 
             total_success += batch_success
             total_error += batch_error
-            print(f"[ENC] Batch {batch_index} done. Success: {batch_success}, Errors: {batch_error}, Total Success: {total_success}")
+            print(f"[ENC] Batch {batch_index} done. Success: {batch_success}, Errors: {batch_error}")
 
             if batch_success == 0 and len(members) > 0:
                 print("[ENC] No successful encodings in this batch, stopping to avoid loop")
@@ -1361,33 +1277,6 @@ class Recognizer:
 
 recognizer = Recognizer()
 
-# Guard to avoid duplicate background regeneration triggers
-enc_regen_in_progress = False
-
-def regenerate_if_empty_async():
-    global enc_regen_in_progress
-    if enc_regen_in_progress:
-        return
-    enc_regen_in_progress = True
-
-    def _worker():
-        global enc_regen_in_progress
-        try:
-            print("[ENC] No encodings loaded. Starting background regeneration...")
-            result = regenerate_missing_encodings(BATCH_SIZE)
-            print(f"[ENC] Background regeneration completed. Success={result.get('success_count',0)} Errors={result.get('error_count',0)}")
-        except Exception as e:
-            print(f"[ENC] Background regeneration error: {e}")
-        finally:
-            try:
-                recognizer.reload()
-                print(f"[ENC] Reloaded encodings after regeneration. Loaded={len(recognizer.known_encodings)}")
-            except Exception as e:
-                print(f"[ENC] Reload error after regeneration: {e}")
-            enc_regen_in_progress = False
-
-    threading.Thread(target=_worker, daemon=True).start()
-
 def background_auto_check():
     """
     Background thread untuk auto-check data baru dengan memory management
@@ -1989,7 +1878,6 @@ INDEX_HTML = """
 <body>
   <div class="container">
     <div class="header">
-      <img src="/static/FTL-LOGO.png" alt="FTL Logo" style="height: 60px; margin-bottom: 10px;">
       <h1>Face Recognition FTL GYM</h1>
       <p style="color: var(--text-secondary); margin: 0;">Powered by Horizon</p>
   </div>
@@ -2011,9 +1899,6 @@ INDEX_HTML = """
       
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark Mode">
         <span id="theme-icon">🌙</span>
-      </button>
-      <button class="btn btn-warning" onclick="refreshEncStatus()" title="Refresh ENC status">
-        <span>🔄</span> Refresh
       </button>
       
     </div>
@@ -2249,32 +2134,6 @@ INDEX_HTML = """
     function updateStatus(message, type = 'info') {
       status.textContent = message;
       status.className = 'status ' + type;
-    }
-
-    async function refreshEncStatus() {
-      try {
-        updateStatus('Checking ENC status...', 'info');
-        const res = await fetch('/enc_status');
-        const data = await res.json();
-        if (!data.success) {
-          updateStatus(`Failed to fetch enc status: ${data.error}`, 'error');
-          return;
-        }
-        updateStatus(`ENC: total=${data.total_members}, with_enc=${data.members_with_enc}, without_enc=${data.members_without_enc}, loaded=${data.loaded_members}`, 'info');
-
-        if (data.members_without_enc > 0) {
-          updateStatus(`Regenerating missing encodings in batch... Remaining=${data.members_without_enc}`, 'warning');
-          const regen = await fetch('/regenerate_enc');
-          const regenData = await regen.json();
-          if (regenData && regenData.success) {
-            updateStatus(`Batch regenerated: success=${regenData.success_count}, errors=${regenData.error_count}. Click Refresh again to continue.`, 'success');
-          } else {
-            updateStatus(`Regeneration failed: ${regenData && regenData.error ? regenData.error : 'unknown error'}`, 'error');
-          }
-        }
-      } catch (e) {
-        updateStatus(`Error during refresh: ${e}`, 'error');
-      }
     }
 
     async function startCamera() {
@@ -3148,31 +3007,6 @@ def regenerate_enc_route():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@app.route("/regenerate_member_enc")
-def regenerate_member_enc_route():
-    try:
-        from flask import request
-        member_id = request.args.get('member_id')
-        if not member_id or not str(member_id).isdigit():
-            return {"success": False, "error": "member_id is required"}
-        result = regenerate_member_enc(int(member_id))
-        return result
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-@app.route("/diagnose_member")
-def diagnose_member_route():
-    try:
-        from flask import request
-        first_name = request.args.get('first_name')
-        last_name = request.args.get('last_name')
-        if not first_name and not last_name:
-            return {"success": False, "error": "Provide first_name or last_name"}
-        info = find_member_ids_by_name(first_name, last_name)
-        return info
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
 @app.route("/enc_status")
 def enc_status_route():
     """
@@ -3191,21 +3025,6 @@ def enc_status_route():
               AND (f.status IS NULL OR f.status = 1)
               AND (f.file_type_id IS NULL OR f.file_type_id = 1)
               AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
-              AND EXISTS (
-                  SELECT 1
-                  FROM member_package mp
-                  JOIN package p ON p.id = mp.package_id
-                  WHERE (
-                      mp.member_id = m.id
-                      OR mp.member_id = m.member_id
-                      OR TRIM(mp.member_id) = CAST(m.id AS CHAR)
-                      OR TRIM(mp.member_id) = CAST(m.member_id AS CHAR)
-                  )
-                    AND (mp.status = 1 OR mp.status IS NULL)
-                    AND (mp.start_date  IS NULL OR mp.start_date  <= NOW())
-                    AND (mp.expired_date IS NULL OR mp.expired_date >= NOW())
-                    AND (p.description = 'Staff Membership' OR p.code = 'EA1M-FTL')
-              )
         """)
         total_members = cur.fetchone()[0]
         
@@ -3218,21 +3037,6 @@ def enc_status_route():
               AND (f.status IS NULL OR f.status = 1)
               AND (f.file_type_id IS NULL OR f.file_type_id = 1)
               AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
-              AND EXISTS (
-                  SELECT 1
-                  FROM member_package mp
-                  JOIN package p ON p.id = mp.package_id
-                  WHERE (
-                      mp.member_id = m.id
-                      OR mp.member_id = m.member_id
-                      OR TRIM(mp.member_id) = CAST(m.id AS CHAR)
-                      OR TRIM(mp.member_id) = CAST(m.member_id AS CHAR)
-                  )
-                    AND (mp.status = 1 OR mp.status IS NULL)
-                    AND (mp.start_date  IS NULL OR mp.start_date  <= NOW())
-                    AND (mp.expired_date IS NULL OR mp.expired_date >= NOW())
-                    AND (p.description = 'Staff Membership' OR p.code = 'EA1M-FTL')
-              )
               AND m.enc IS NOT NULL 
               AND LENGTH(m.enc) = 1024
         """)
@@ -3557,22 +3361,7 @@ def recognize_gcp():
             WHERE m.status = 1
               AND (f.status IS NULL OR f.status = 1)
               AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-                  AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
-                  AND EXISTS (
-                      SELECT 1
-                      FROM member_package mp
-                      JOIN package p ON p.id = mp.package_id
-                      WHERE (
-                          mp.member_id = m.id
-                          OR mp.member_id = m.member_id
-                          OR TRIM(mp.member_id) = CAST(m.id AS CHAR)
-                          OR TRIM(mp.member_id) = CAST(m.member_id AS CHAR)
-                      )
-                        AND (mp.status = 1 OR mp.status IS NULL)
-                        AND (mp.start_date  IS NULL OR mp.start_date  <= NOW())
-                        AND (mp.expired_date IS NULL OR mp.expired_date >= NOW())
-                        AND (p.description = 'Staff Membership' OR p.code = 'EA1M-FTL')
-                  )
+              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
               AND m.enc IS NOT NULL 
               AND LENGTH(m.enc) = 1024
         """)
@@ -3684,10 +3473,12 @@ if __name__ == "__main__":
     print("[STARTUP] Ensuring ENC field exists...")
     add_enc_field_to_member_table()
     
-    print("[STARTUP] Skipping encoding regeneration - encodings already exist")
-    print(f"[STARTUP] Regeneration batch size: {BATCH_SIZE} (will be used for new members only)")
-    enc_status = {"success": True, "success_count": 0, "error_count": 0}
-    print(f"[STARTUP] ENC regeneration: {enc_status['success_count']} success, {enc_status['error_count']} errors (skipped)")
+    print(f"[STARTUP] Regenerating ALL encodings from scratch (batch={BATCH_SIZE})...")
+    enc_status = regenerate_missing_encodings(BATCH_SIZE, regenerate_all=True)
+    if enc_status.get("success"):
+        print(f"[STARTUP] ENC regeneration: {enc_status.get('success_count',0)} success, {enc_status.get('error_count',0)} errors")
+    else:
+        print(f"[STARTUP] ENC regeneration error: {enc_status.get('error')}")
     
     # Initial load
     print("[STARTUP] Loading encodings...")
@@ -3696,10 +3487,6 @@ if __name__ == "__main__":
     print(f"[STARTUP] Auto-check interval: {recognizer.auto_check_interval} seconds")
     print(f"[STARTUP] Loaded {len(recognizer.loaded_member_ids)} member encodings")
     print(f"[STARTUP] Redis cache: {'Enabled' if REDIS_ENABLED else 'Disabled'}")
-
-    # Fallback: if no encodings loaded (e.g., enc field emptied), trigger batched regeneration asynchronously
-    if len(recognizer.loaded_member_ids) == 0:
-        regenerate_if_empty_async()
     
     # Force garbage collection after loading
     force_garbage_collection()
