@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Retake Foto</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/retake.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h2>Foto Profile</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Foto Saat Ini</div>
+                <img id="currentPhoto" class="preview" src="{{ current_photo }}" onerror="this.src=''; this.alt='No photo';" />
+            </div>
+            <div class="card">
+                <div class="label">Preview Foto Baru</div>
+                <img id="newPreview" class="preview" src="" alt="Preview kosong" />
+                <div class="actions">
+                    <input id="fileInput" type="file" accept="image/*" />
+                    <button id="captureBtn" type="button" class="btn">Ambil Foto</button>
+                    <button id="resetBtn" type="button" class="btn secondary">Reset</button>
+                </div>
+                <div class="hint">Format: JPG, JPEG, PNG, GIF, WebP (Maks 2MB)</div>
+            </div>
+        </div>
+        <div class="instructions-card">
+            <div class="label">Petunjuk Pengambilan Foto</div>
+            <ul>
+                <li>Foto tampak depan menghadap kamera, pencahayaan jelas</li>
+                <li>1 orang saja, wajah tidak tertutup masker/kacamata hitam/topi</li>
+                <li>Latar jelas, bukan saat olahraga, tidak bersiluet</li>
+            </ul>
+            <div class="actions">
+                <a href="{{ url_for('main.recognition_page') }}" class="btn">Buka Face Recognition</a>
+            </div>
+        </div>
+    </div>
+
+    <video id="video" autoplay playsinline style="display:none"></video>
+    <canvas id="canvas" style="display:none"></canvas>
+
+    <script src="{{ url_for('static', filename='js/retake.js') }}"></script>
+</body>
+</html>

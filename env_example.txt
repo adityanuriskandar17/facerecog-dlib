@@ -4,6 +4,9 @@ MYSQL_PORT=3306
 MYSQL_DATABASE=deepface
 MYSQL_USER=root
 MYSQL_PASSWORD=your_password_here
+AUTH_EMAIL=admin@example.com
+AUTH_PASSWORD=admin123
+FLASK_SECRET_KEY=change-me
 
 # Gym API Configuration
 GYM_API_KEY=your_gym_api_key_here

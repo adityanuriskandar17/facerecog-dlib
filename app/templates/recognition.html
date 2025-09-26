@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Face Recognition FTL GYM</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/recognition.css') }}">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Face Recognition FTL GYM</h1>
+      <p style="color: var(--text-secondary); margin: 0;">Powered by Horizon</p>
+    </div>
+    
+    <div class="controls">
+      <button class="btn btn-primary" onclick="startCamera()">
+        <span>📹</span> Start Camera
+      </button>
+      <button class="btn btn-danger" onclick="stopCamera()">
+        <span>⏹️</span> Stop Camera
+      </button>
+      
+      <button class="btn btn-secondary" onclick="toggleFullscreen()" title="Toggle Fullscreen">
+        <span id="fullscreen-icon">⛶</span>
+        <span id="fullscreen-text">Fullscreen</span>
+      </button>
+      
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark Mode">
+        <span id="theme-icon">🌙</span>
+      </button>
+    </div>
+    
+    <div id="status" class="status info">Click "Start Camera" to begin face recognition</div>
+    
+    <div class="camera-container">
+      <div class="camera-wrapper">
+        <video id="video" autoplay muted playsinline></video>
+        <canvas id="canvas" width="960" height="720"></canvas>
+        <div id="cooldown-display" class="cooldown-display hidden">
+          <div class="cooldown-content">
+            <div class="cooldown-icon">⏳</div>
+            <div class="cooldown-text">
+              <div class="cooldown-title">Cooldown</div>
+              <div class="cooldown-time"><span id="cooldown-time">0.0</span>s</div>
+            </div>
+          </div>
+        </div>
+        <div id="popup-notification" class="popup-notification hidden">
+          <div class="popup-icon" id="popup-icon">✅</div>
+          <div class="popup-title" id="popup-title">ACCESS GRANTED</div>
+          <div class="popup-member-name" id="popup-member-name">Member Name</div>
+          <div class="popup-member-id" id="popup-member-id">Member #123456</div>
+          <div class="popup-message" id="popup-message">Welcome to FTL Gym!</div>
+        </div>
+      </div>
+    </div>
+    
+    <button class="fullscreen-exit" onclick="exitFullscreen()">
+      <span>✕</span> Exit Fullscreen
+    </button>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/recognition.js') }}"></script>
+</body>
+</html>
