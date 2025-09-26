@@ -10,6 +10,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // UI for similarity & loading
     let resultBar = document.getElementById('similarityResult');
     let loader = document.getElementById('processingLoader');
+    let meter = document.getElementById('similarityMeter');
+    let meterFill = document.getElementById('similarityMeterFill');
+    let label = document.getElementById('similarityLabel');
     
     let currentStream = null;
 
@@ -26,6 +29,8 @@ document.addEventListener('DOMContentLoaded', function() {
             
             currentStream = stream;
             video.srcObject = stream;
+            // Ensure live preview is not mirrored
+            video.style.transform = 'scaleX(-1)';
             cameraContainer.style.display = 'block';
             preview.style.display = 'none';
             
@@ -55,7 +60,12 @@ document.addEventListener('DOMContentLoaded', function() {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0);
+        // Flip horizontally so captured image is not mirrored
+        ctx.save();
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
         
         const dataURL = canvas.toDataURL('image/jpeg', 0.8);
         preview.src = dataURL;
@@ -102,10 +112,26 @@ document.addEventListener('DOMContentLoaded', function() {
             const pct = json.similarity ?? 0;
             const dist = json.distance ?? 1.0;
             const match = !!json.match;
+
+            // Category label
+            let category = 'Kurang mirip';
+            let catClass = 'label-low';
+            if (pct >= 75) { category = 'Sangat mirip'; catClass = 'label-high'; }
+            else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
+
             if (resultBar) {
-                resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist}) ${match ? '✓ Cocok' : '✗ Tidak cocok'}`;
-                resultBar.classList.toggle('match', match);
-                resultBar.classList.toggle('no-match', !match);
+                resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist})`;
+                resultBar.classList.remove('match','no-match');
+            }
+            if (meter && meterFill) {
+                meter.style.display = 'block';
+                // animate to percentage
+                meterFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+            }
+            if (label) {
+                label.style.display = 'block';
+                label.className = `similarity-label ${catClass}`;
+                label.textContent = category + (match ? ' • Lolos ambang' : ' • Di bawah ambang');
             }
         } catch (e) {
             if (loader) loader.style.display = 'none';

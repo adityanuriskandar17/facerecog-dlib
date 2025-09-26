@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, redirect, url_for
 from .auth import require_login, fetch_member_profile
 import threading
 import base64
@@ -136,9 +136,9 @@ def compare_photo():
         # Common tolerance ~0.6. Map 0.0 => 100%, 0.6 => ~0%, clamp to [0,100]
         similarity = max(0.0, 1.0 - (distance / 0.6)) * 100.0
 
-        # Threshold from config
-        from ..config import TOLERANCE
-        is_match = distance <= TOLERANCE
+        # Decision: require BOTH distance threshold and minimum similarity percentage
+        from ..config import TOLERANCE, MIN_SIMILARITY_PERCENT
+        is_match = (distance <= TOLERANCE) and (similarity >= MIN_SIMILARITY_PERCENT)
 
         # Cleanup
         del bgr, np_arr, img_bytes, rgb_captured, rgb_gym, boxes_cap, boxes_gym, enc_cap_list, enc_gym_list
@@ -148,7 +148,8 @@ def compare_photo():
             "success": True,
             "distance": round(distance, 4),
             "similarity": round(similarity, 2),
-            "match": bool(is_match)
+            "match": bool(is_match),
+            "thresholds": {"tolerance": TOLERANCE, "min_similarity": MIN_SIMILARITY_PERCENT}
         }
     except Exception as e:
         print(f"[COMPARE] Error: {e}")

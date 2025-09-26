@@ -23,6 +23,7 @@ FLASK_SECRET_KEY = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-here')
 # Face Recognition Configuration
 TOLERANCE = float(os.getenv('TOLERANCE', '0.6'))
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))
+MIN_SIMILARITY_PERCENT = float(os.getenv('MIN_SIMILARITY_PERCENT', '75'))
 
 # Redis Configuration
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
