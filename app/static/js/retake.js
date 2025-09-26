@@ -1,68 +1,39 @@
 document.addEventListener('DOMContentLoaded', function() {
-    const fileInput = document.getElementById('fileInput');
+    const startCameraBtn = document.getElementById('startCameraBtn');
     const captureBtn = document.getElementById('captureBtn');
+    const stopCameraBtn = document.getElementById('stopCameraBtn');
     const resetBtn = document.getElementById('resetBtn');
     const preview = document.getElementById('newPreview');
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
+    const cameraContainer = document.getElementById('cameraContainer');
+    
+    let currentStream = null;
 
-    // File input handler
-    fileInput.addEventListener('change', () => {
-        const file = fileInput.files && fileInput.files[0];
-        if (!file) return;
-        
-        // Validate file size (2MB max)
-        if (file.size > 2 * 1024 * 1024) {
-            alert('File terlalu besar. Maksimal 2MB.');
-            fileInput.value = '';
-            return;
-        }
-        
-        // Validate file type
-        const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-        if (!validTypes.includes(file.type)) {
-            alert('Format file tidak didukung. Gunakan JPG, PNG, GIF, atau WebP.');
-            fileInput.value = '';
-            return;
-        }
-        
-        const url = URL.createObjectURL(file);
-        preview.src = url;
-    });
-
-    // Camera capture handler
-    captureBtn.addEventListener('click', async () => {
+    // Start camera handler
+    startCameraBtn.addEventListener('click', async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { 
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
+                    width: { ideal: 640 }, 
+                    height: { ideal: 480 },
                     facingMode: 'user'
                 } 
             });
             
+            currentStream = stream;
             video.srcObject = stream;
+            cameraContainer.style.display = 'block';
+            preview.style.display = 'none';
             
-            await new Promise(r => {
-                video.onloadedmetadata = () => {
-                    canvas.width = 640;
-                    canvas.height = Math.round(640 * (video.videoHeight / video.videoWidth));
-                    r();
-                };
-            });
-            
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-            preview.src = dataUrl;
-            
-            // Stop all video tracks
-            stream.getTracks().forEach(track => track.stop());
+            // Show/hide buttons
+            startCameraBtn.style.display = 'none';
+            captureBtn.style.display = 'inline-block';
+            stopCameraBtn.style.display = 'inline-block';
             
         } catch (error) {
-            console.error('Camera access error:', error);
             if (error.name === 'NotAllowedError') {
-                alert('Akses kamera ditolak. Mohon izinkan akses kamera untuk mengambil foto.');
+                alert('Akses kamera ditolak. Silakan izinkan akses kamera dan coba lagi.');
             } else if (error.name === 'NotFoundError') {
                 alert('Kamera tidak ditemukan. Pastikan kamera terhubung.');
             } else {
@@ -71,10 +42,67 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // Capture photo handler
+    captureBtn.addEventListener('click', () => {
+        if (video.videoWidth === 0 || video.videoHeight === 0) {
+            alert('Kamera belum siap. Tunggu sebentar dan coba lagi.');
+            return;
+        }
+        
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0);
+        
+        const dataURL = canvas.toDataURL('image/jpeg', 0.8);
+        preview.src = dataURL;
+        preview.style.display = 'block';
+        cameraContainer.style.display = 'none';
+        
+        // Stop the stream
+        if (currentStream) {
+            currentStream.getTracks().forEach(track => track.stop());
+            currentStream = null;
+        }
+        
+        // Show/hide buttons
+        startCameraBtn.style.display = 'inline-block';
+        captureBtn.style.display = 'none';
+        stopCameraBtn.style.display = 'none';
+    });
+
+    // Stop camera handler
+    stopCameraBtn.addEventListener('click', () => {
+        if (currentStream) {
+            currentStream.getTracks().forEach(track => track.stop());
+            currentStream = null;
+        }
+        
+        cameraContainer.style.display = 'none';
+        preview.style.display = 'none';
+        
+        // Show/hide buttons
+        startCameraBtn.style.display = 'inline-block';
+        captureBtn.style.display = 'none';
+        stopCameraBtn.style.display = 'none';
+    });
+
     // Reset handler
     resetBtn.addEventListener('click', () => {
+        // Stop camera if running
+        if (currentStream) {
+            currentStream.getTracks().forEach(track => track.stop());
+            currentStream = null;
+        }
+        
         preview.src = '';
-        fileInput.value = '';
+        preview.style.display = 'none';
+        cameraContainer.style.display = 'none';
+        
+        // Show/hide buttons
+        startCameraBtn.style.display = 'inline-block';
+        captureBtn.style.display = 'none';
+        stopCameraBtn.style.display = 'none';
     });
 
     // Check if current photo exists and show appropriate message

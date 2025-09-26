@@ -39,6 +39,32 @@ body {
 .header {
   text-align: center;
   margin-bottom: 30px;
+  position: relative;
+}
+
+.logout-section {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.logout-btn {
+  background: #dc3545;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s ease;
+  border: none;
+  cursor: pointer;
+}
+
+.logout-btn:hover {
+  background: #c82333;
+  color: white;
+  text-decoration: none;
 }
 
 .header h1 {
@@ -476,6 +502,11 @@ body {
     max-height: 70vh;
   }
   .controls { flex-direction: column; gap: 8px; }
+  
+  .logout-section {
+    position: static;
+    margin-top: 10px;
+  }
 }
 
 @media (max-width: 768px) {

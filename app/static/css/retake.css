@@ -11,10 +11,43 @@ body {
     margin: 0 auto;
 }
 
-.container h2 {
-    color: #333;
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: 30px;
-    text-align: center;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.header h2 {
+    color: #333;
+    margin: 0;
+    flex: 1;
+}
+
+.logout-section {
+    display: flex;
+    align-items: center;
+}
+
+.logout-btn {
+    background: #dc3545;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s ease;
+    border: none;
+    cursor: pointer;
+}
+
+.logout-btn:hover {
+    background: #c82333;
+    color: white;
+    text-decoration: none;
 }
 
 .row {
@@ -106,14 +139,7 @@ body {
     justify-content: center;
 }
 
-.actions input[type="file"] {
-    padding: 8px 12px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    background: white;
-    cursor: pointer;
-    font-size: 14px;
-}
+/* File input removed - only camera capture allowed */
 
 .instructions-card ul {
     margin: 15px 0;
@@ -147,8 +173,7 @@ body {
         align-items: center;
     }
     
-    .actions .btn,
-    .actions input[type="file"] {
+    .actions .btn {
         width: 100%;
         max-width: 200px;
     }
@@ -164,7 +189,17 @@ body {
         padding: 15px;
     }
     
-    .container h2 {
+    .header h2 {
         font-size: 24px;
+    }
+    
+    .header {
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+    }
+    
+    .logout-section {
+        margin-top: 10px;
     }
 }

@@ -8,7 +8,12 @@
 </head>
 <body>
     <div class="container">
-        <h2>Foto Profile</h2>
+        <div class="header">
+            <h2>Foto Profile</h2>
+            <div class="logout-section">
+                <a href="{{ url_for('auth.logout') }}" class="logout-btn">Logout</a>
+            </div>
+        </div>
         <div class="row">
             <div class="card">
                 <div class="label">Foto Saat Ini</div>
@@ -16,13 +21,18 @@
             </div>
             <div class="card">
                 <div class="label">Preview Foto Baru</div>
-                <img id="newPreview" class="preview" src="" alt="Preview kosong" />
+                <div id="cameraContainer" style="display: none;">
+                    <video id="video" autoplay muted style="width: 100%; max-width: 300px; border-radius: 8px;"></video>
+                    <canvas id="canvas" style="display: none;"></canvas>
+                </div>
+                <img id="newPreview" class="preview" src="" alt="Preview kosong" style="display: none;" />
                 <div class="actions">
-                    <input id="fileInput" type="file" accept="image/*" />
-                    <button id="captureBtn" type="button" class="btn">Ambil Foto</button>
+                    <button id="startCameraBtn" type="button" class="btn">Mulai Kamera</button>
+                    <button id="captureBtn" type="button" class="btn" style="display: none;">Ambil Foto</button>
+                    <button id="stopCameraBtn" type="button" class="btn secondary" style="display: none;">Stop Kamera</button>
                     <button id="resetBtn" type="button" class="btn secondary">Reset</button>
                 </div>
-                <div class="hint">Format: JPG, JPEG, PNG, GIF, WebP (Maks 2MB)</div>
+                <div class="hint">Klik "Mulai Kamera" untuk membuka kamera, lalu "Ambil Foto" saat siap</div>
             </div>
         </div>
         <div class="instructions-card">
