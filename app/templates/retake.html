@@ -26,6 +26,9 @@
                     <canvas id="canvas" style="display: none;"></canvas>
                 </div>
                 <img id="newPreview" class="preview" src="" alt="Preview kosong" style="display: none;" />
+                <div id="processingLoader" style="display:none; text-align:center; margin-top:8px;">
+                    <span>Memproses...</span>
+                </div>
                 <div class="actions">
                     <button id="startCameraBtn" type="button" class="btn">Mulai Kamera</button>
                     <button id="captureBtn" type="button" class="btn" style="display: none;">Ambil Foto</button>
@@ -33,6 +36,7 @@
                     <button id="resetBtn" type="button" class="btn secondary">Reset</button>
                 </div>
                 <div class="hint">Klik "Mulai Kamera" untuk membuka kamera, lalu "Ambil Foto" saat siap</div>
+                <div id="similarityResult" class="similarity-result" style="margin-top:10px; text-align:center;"></div>
             </div>
         </div>
         <div class="instructions-card">

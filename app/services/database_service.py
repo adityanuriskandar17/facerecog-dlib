@@ -23,26 +23,10 @@ def get_conn():
         raise
 
 def fetch_member_images() -> List[Tuple[int, int, str, str, str]]:
-    """Fetch member images from database"""
+    """Deprecated: Local memberphoto no longer used. Use GymMaster profile API for photos."""
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT m.id, m.member_id, m.first_name, m.last_name, m.memberphoto
-            FROM member m
-            WHERE m.memberphoto IS NOT NULL 
-            AND m.memberphoto != '' 
-            AND m.memberphoto != 'NULL'
-            AND m.status = 'active'
-            ORDER BY m.id
-        """)
-        
-        results = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        return results
+        # Intentionally return empty list to avoid relying on local memberphoto column
+        return []
     except Error as e:
         print(f"[DB] Error fetching member images: {e}")
         return []
@@ -182,88 +166,8 @@ def add_enc_field_to_member_table():
 def regenerate_missing_encodings(batch_size: int, regenerate_all: bool = False) -> Dict:
     """Regenerate missing encodings"""
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        
-        if regenerate_all:
-            # Regenerate all encodings
-            cur.execute("""
-                SELECT m.id, m.member_id, m.first_name, m.last_name, m.memberphoto
-                FROM member m
-                WHERE m.memberphoto IS NOT NULL 
-                AND m.memberphoto != '' 
-                AND m.memberphoto != 'NULL'
-                AND m.status = 'active'
-                LIMIT %s
-            """, (batch_size,))
-        else:
-            # Only regenerate missing encodings
-            cur.execute("""
-                SELECT m.id, m.member_id, m.first_name, m.last_name, m.memberphoto
-                FROM member m
-                WHERE m.memberphoto IS NOT NULL 
-                AND m.memberphoto != '' 
-                AND m.memberphoto != 'NULL'
-                AND m.status = 'active'
-                AND (m.enc IS NULL OR m.enc = '')
-                LIMIT %s
-            """, (batch_size,))
-        
-        results = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        if not results:
-            return {"success": True, "message": "No encodings to regenerate"}
-        
-        # Process encodings
-        processed = 0
-        errors = 0
-        
-        for db_member_id, gym_member_id, first_name, last_name, photo_url in results:
-            try:
-                # Check if encoding already exists and we're not regenerating all
-                if not regenerate_all:
-                    existing_encoding = load_encoding_from_db(db_member_id)
-                    if existing_encoding is not None:
-                        continue
-                
-                # Generate new encoding
-                from .face_recognition_service import url_to_rgb_array, safe_face_recognition, force_garbage_collection
-                
-                img = url_to_rgb_array(photo_url)
-                boxes = safe_face_recognition("face_locations", img, model="hog")
-                
-                if not boxes:
-                    print(f"[REGEN] No face found for member_id={db_member_id}")
-                    errors += 1
-                    continue
-                
-                encoding = safe_face_recognition("face_encodings", img, known_face_locations=[boxes[0]])
-                if not encoding:
-                    print(f"[REGEN] Failed to generate encoding for member_id={db_member_id}")
-                    errors += 1
-                    continue
-                
-                # Save to database
-                save_encoding_to_db(db_member_id, encoding[0])
-                processed += 1
-                
-                # Clean up memory
-                del img, boxes, encoding
-                force_garbage_collection()
-                
-            except Exception as e:
-                print(f"[REGEN] Error processing member_id={db_member_id}: {e}")
-                errors += 1
-        
-        return {
-            "success": True,
-            "processed": processed,
-            "errors": errors,
-            "total": len(results)
-        }
-        
+        # Disable regeneration based on local memberphoto; photos are sourced from GymMaster
+        return {"success": True, "message": "Regeneration disabled; using GymMaster photos"}
     except Error as e:
         print(f"[DB] Error regenerating encodings: {e}")
         return {"success": False, "error": str(e)}

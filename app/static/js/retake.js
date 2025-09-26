@@ -7,6 +7,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const cameraContainer = document.getElementById('cameraContainer');
+    // UI for similarity & loading
+    let resultBar = document.getElementById('similarityResult');
+    let loader = document.getElementById('processingLoader');
     
     let currentStream = null;
 
@@ -43,7 +46,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // Capture photo handler
-    captureBtn.addEventListener('click', () => {
+    captureBtn.addEventListener('click', async () => {
         if (video.videoWidth === 0 || video.videoHeight === 0) {
             alert('Kamera belum siap. Tunggu sebentar dan coba lagi.');
             return;
@@ -69,6 +72,45 @@ document.addEventListener('DOMContentLoaded', function() {
         startCameraBtn.style.display = 'inline-block';
         captureBtn.style.display = 'none';
         stopCameraBtn.style.display = 'none';
+
+        // Trigger comparison against GymMaster photo
+        try {
+            if (loader) loader.style.display = 'block';
+            if (resultBar) {
+                resultBar.textContent = '';
+                resultBar.className = 'similarity-result';
+            }
+            const res = await fetch('/compare-photo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ image: dataURL })
+            });
+            const contentType = res.headers.get('content-type') || '';
+            let json;
+            if (contentType.includes('application/json')) {
+                json = await res.json();
+            } else {
+                const text = await res.text();
+                throw new Error(text || `HTTP ${res.status}`);
+            }
+            if (loader) loader.style.display = 'none';
+            if (!json.success) {
+                alert(json.error || 'Gagal membandingkan foto');
+                return;
+            }
+            const pct = json.similarity ?? 0;
+            const dist = json.distance ?? 1.0;
+            const match = !!json.match;
+            if (resultBar) {
+                resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist}) ${match ? '✓ Cocok' : '✗ Tidak cocok'}`;
+                resultBar.classList.toggle('match', match);
+                resultBar.classList.toggle('no-match', !match);
+            }
+        } catch (e) {
+            if (loader) loader.style.display = 'none';
+            alert('Terjadi kesalahan saat memproses: ' + (e?.message || e));
+        }
     });
 
     // Stop camera handler

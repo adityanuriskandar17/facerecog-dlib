@@ -203,3 +203,16 @@ body {
         margin-top: 10px;
     }
 }
+
+.similarity-result {
+    font-size: 14px;
+    color: #444;
+}
+.similarity-result.match {
+    color: #2e7d32;
+    font-weight: 600;
+}
+.similarity-result.no-match {
+    color: #c62828;
+    font-weight: 600;
+}
