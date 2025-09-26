@@ -1,0 +1,23 @@
+DLIB/
+├── app/                          # Main application package
+│   ├── __init__.py              # Flask app factory ✅
+│   ├── config/                  # Configuration ✅
+│   ├── blueprints/              # Routes (modular) ✅
+│   │   ├── auth.py             # Authentication ✅
+│   │   ├── main.py             # Main pages ✅
+│   │   ├── recognition.py      # Recognition API ✅
+│   │   └── admin.py            # Admin/debug ✅
+│   ├── services/                # Business logic ✅
+│   │   ├── database_service.py # Database ops ✅
+│   │   ├── recognition_service.py # Face recognition ✅
+│   │   ├── redis_service.py    # Caching ✅
+│   │   ├── face_recognition_service.py # Utils ✅
+│   │   └── door_service.py     # Door management ✅
+│   ├── templates/               # HTML templates ✅
+│   │   ├── login.html
+│   │   ├── retake.html
+│   │   └── recognition.html
+│   └── static/                  # Static files ✅
+│       ├── css/
+│       └── js/
+└── app.py                       # Main entry point ✅

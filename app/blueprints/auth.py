@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, request, session, redirect, url_for
 import requests
 
-from ..config import GYM_API_KEY, GYM_LOGIN_URL, GYM_PROFILE_URL
+from ..config import GYM_API_KEY, GYM_BASE_URL, GYM_LOGIN_URL, GYM_PROFILE_URL
 
 # Create auth blueprint
 auth_bp = Blueprint('auth', __name__)

@@ -13,6 +13,7 @@ DB_NAME = os.getenv('DB_NAME', 'deepface')
 
 # Gym API Configuration
 GYM_API_KEY = os.getenv('GYM_API_KEY', '')
+GYM_BASE_URL = os.getenv('GYM_BASE_URL', '')
 GYM_LOGIN_URL = os.getenv('GYM_LOGIN_URL', '')
 GYM_PROFILE_URL = os.getenv('GYM_PROFILE_URL', '')
 
