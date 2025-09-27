@@ -52,8 +52,16 @@ INDEX_HTML = """
     }
     
     .header {
-      text-align: center;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-bottom: 30px;
+      padding: 0 20px;
+    }
+    
+    .header-content {
+      text-align: center;
+      flex: 1;
     }
     
     .header h1 {
@@ -326,6 +334,7 @@ INDEX_HTML = """
     
     @media (max-width: 1024px) {
       .container { padding: 15px; }
+      .header { flex-direction: column; gap: 15px; padding: 0 10px; }
       .header h1 { font-size: 2rem; }
       .camera-wrapper { 
         max-width: 100%;
@@ -337,6 +346,7 @@ INDEX_HTML = """
     
     @media (max-width: 768px) {
       .container { padding: 10px; }
+      .header { flex-direction: column; gap: 15px; padding: 0 5px; }
       .header h1 { font-size: 1.5rem; }
       .camera-wrapper { 
         max-width: 100%;
@@ -356,14 +366,17 @@ INDEX_HTML = """
 <body>
   <div class="container">
     <div class="header">
-      <h1>Face Recognition FTL GYM</h1>
-      <p style="color: var(--text-secondary); margin: 0;">Powered by Horizon</p>
+      <div></div>
+      <div class="header-content">
+        <h1>Face Recognition FTL GYM</h1>
+        <p style="color: var(--text-secondary); margin: 0;">Powered by Horizon</p>
+      </div>
+      <button class="btn btn-success" onclick="window.location.href='/login'">
+        <span>🔐</span> Retake
+      </button>
     </div>
     
     <div class="controls">
-      <button class="btn btn-success" onclick="window.location.href='/login'">
-        <span>🔐</span> Login
-      </button>
       <button class="btn btn-primary" onclick="startCamera()">
         <span>📹</span> Start Camera
       </button>
