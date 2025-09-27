@@ -33,11 +33,8 @@ def update_door_id():
 
 @recognition_bp.route("/recognize", methods=["POST"])
 def recognize():
-    """Face recognition endpoint"""
+    """Face recognition endpoint - no login required"""
     try:
-        if not require_login():
-            return {"success": False, "error": "Unauthorized"}, 401
-        
         # Import here to avoid circular imports
         from ..services.recognition_service import process_recognition
         

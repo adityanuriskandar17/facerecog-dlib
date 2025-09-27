@@ -405,7 +405,189 @@ def get_health_status():
     }
 
 def process_recognition(request, device_id):
-    """Process recognition request"""
-    # This is a simplified version - you'll need to implement the full logic
-    # from the original /recognize endpoint
-    return {"success": True, "faces": [], "popup": None, "cooldown": None}
+    """Process recognition request - implements face recognition logic from app_old.py"""
+    try:
+        from flask import request
+        import numpy as np
+        import cv2
+        import time
+        
+        if 'frame' not in request.files:
+            return {"success": False, "error": "No frame provided"}
+        
+        file = request.files['frame']
+        if file.filename == '':
+            return {"success": False, "error": "No file selected"}
+        
+        # Read image data
+        image_data = file.read()
+        nparr = np.frombuffer(image_data, np.uint8)
+        frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame_bgr is None:
+            return {"success": False, "error": "Invalid image"}
+        
+        # Resize image for faster processing if too large
+        height, width = frame_bgr.shape[:2]
+        if width > 640:  # If image is larger than 640px, resize it
+            scale = 640 / width
+            new_width = 640
+            new_height = int(height * scale)
+            frame_bgr = cv2.resize(frame_bgr, (new_width, new_height))
+            print(f"[PERF] Resized image from {width}x{height} to {new_width}x{new_height}")
+        
+        # Convert to RGB for face detection
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        
+        # Detect faces and get recognition results
+        with recognizer.lock:
+            known_encs = recognizer.known_encodings
+            known_names = recognizer.known_names
+            known_ids = recognizer.known_ids
+        
+        # Load encodings on-demand if not loaded
+        if not known_encs:
+            print(f"[RECOGNIZE] No known encodings loaded. Total: {len(known_encs)}. Attempting to load on-demand...")
+            try:
+                recognizer.reload()
+                known_encs = recognizer.known_encodings
+                known_names = recognizer.known_names
+                known_ids = recognizer.known_ids
+                print(f"[RECOGNIZE] On-demand load completed. Loaded: {len(known_encs)} encodings")
+            except Exception as e:
+                print(f"[RECOGNIZE] On-demand load failed: {e}")
+                return {"success": False, "error": "Failed to load encodings"}
+        
+        # Face detection
+        face_locations = safe_face_recognition("face_locations", rgb, model="hog")
+        if not face_locations:
+            return {"success": True, "faces": [], "debug": "No faces detected"}
+        
+        # Get face encodings
+        face_encodings = safe_face_recognition("face_encodings", rgb, known_face_locations=face_locations)
+        if not face_encodings:
+            return {"success": True, "faces": [], "debug": "No face encodings computed"}
+        
+        faces = []
+        current_time = time.time()
+        
+        # Check device cooldown
+        if device_id in recognizer.device_cooldowns:
+            last_access = recognizer.device_cooldowns[device_id].get('last_access', 0)
+            if current_time - last_access < 2.0:  # 2 second cooldown
+                return {"success": True, "faces": [], "debug": "Cooldown active"}
+        
+        # Process each detected face
+        for i, (face_encoding, face_location) in enumerate(zip(face_encodings, face_locations)):
+            # Compare with known faces
+            if known_encs:
+                matches = safe_face_recognition("compare_faces", known_encs, face_encoding, tolerance=TOLERANCE)
+                face_distances = safe_face_recognition("face_distance", known_encs, face_encoding)
+            else:
+                matches = []
+                face_distances = []
+            
+            name = "Unknown"
+            confidence = 0.0
+            member_id = None
+            
+            if matches and any(matches):
+                # Find the best match
+                best_match_idx = None
+                best_distance = float('inf')
+                
+                for j, (match, distance) in enumerate(zip(matches, face_distances)):
+                    if match and distance < best_distance:
+                        best_distance = distance
+                        best_match_idx = j
+                
+                if best_match_idx is not None:
+                    name = known_names[best_match_idx]
+                    member_id = known_ids[best_match_idx]
+                    confidence = max(0.0, 1.0 - best_distance) * 100
+            
+            # Check device cooldown for this specific person
+            cooldown_info = None
+            if device_id in recognizer.device_cooldowns:
+                device_info = recognizer.device_cooldowns[device_id]
+                if device_info.get('member') == name:
+                    last_login = device_info.get('last_login', 0)
+                    remaining = max(0, recognizer.cooldown_duration - (current_time - last_login))
+                    if remaining > 0:
+                        cooldown_info = {
+                            "show": True,
+                            "remaining": remaining
+                        }
+            
+            # Update prediction streak for multi-frame confirmation
+            if name != "Unknown":
+                if device_id not in recognizer.device_prediction_streak:
+                    recognizer.device_prediction_streak[device_id] = {"name": name, "count": 0}
+                
+                current_streak = recognizer.device_prediction_streak[device_id]
+                if current_streak["name"] == name:
+                    current_streak["count"] += 1
+                else:
+                    current_streak["name"] = name
+                    current_streak["count"] = 1
+            
+            # Extract face coordinates
+            top, right, bottom, left = face_location
+            faces.append({
+                "x": int(left),
+                "y": int(top),
+                "width": int(right - left),
+                "height": int(bottom - top),
+                "name": name,
+                "confidence": confidence,
+                "member_id": member_id,
+                "cooldown": cooldown_info is not None,
+                "cooldown_remaining": cooldown_info["remaining"] if cooldown_info else 0
+            })
+        
+        # Update device info
+        recognizer.device_cooldowns[device_id] = {
+            'last_access': current_time
+        }
+        
+        # Check if we should show popup (granted access)
+        popup_info = None
+        if faces:
+            best_face = max(faces, key=lambda f: f["confidence"])
+            if best_face["name"] != "Unknown" and best_face["confidence"] > 50:
+                # Check if we have enough consistent frames
+                current_streak = recognizer.device_prediction_streak.get(device_id, {"name": "", "count": 0})
+                if current_streak["count"] >= REQUIRED_CONSISTENT_FRAMES:
+                    # Show access granted popup
+                    popup_info = {
+                        "show": True,
+                        "style": "GRANTED",
+                        "member_name": best_face["name"],
+                        "member_id": best_face["member_id"],
+                        "message": "Welcome to FTL Gym!"
+                    }
+                    
+                    # Update cooldown
+                    recognizer.device_cooldowns[device_id] = {
+                        'last_access': current_time,
+                        'last_login': current_time,
+                        'member': best_face["name"]
+                    }
+                    
+                    # Reset prediction streak
+                    recognizer.device_prediction_streak[device_id] = {"name": "", "count": 0}
+        
+        # Force garbage collection
+        force_garbage_collection()
+        
+        return {
+            "success": True, 
+            "faces": faces, 
+            "popup": popup_info,
+            "cooldown": None,
+            "debug": f"Processed {len(known_encs)} encodings"
+        }
+        
+    except Exception as e:
+        print(f"[RECOGNIZE] Recognition error: {e}")
+        return {"success": False, "error": str(e)}
