@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from typing import List, Dict, Tuple
 
-from ..config import TOLERANCE, BATCH_SIZE
+from ..config import TOLERANCE, BATCH_SIZE, MIN_SIMILARITY_PERCENT
 from .database_service import (
     get_conn, fetch_member_images, load_encoding_from_db, save_encoding_to_db,
     build_known_encodings_fast, add_enc_field_to_member_table, regenerate_missing_encodings
@@ -492,7 +492,7 @@ def process_recognition(request, device_id):
             member_id = None
             
             if matches and any(matches):
-                # Find the best match
+                # Find the best match with strict distance checking
                 best_match_idx = None
                 best_distance = float('inf')
                 
@@ -501,10 +501,21 @@ def process_recognition(request, device_id):
                         best_distance = distance
                         best_match_idx = j
                 
+                # Only accept if distance is below tolerance AND confidence is high enough
                 if best_match_idx is not None:
-                    name = known_names[best_match_idx]
-                    member_id = known_ids[best_match_idx]
                     confidence = max(0.0, 1.0 - best_distance) * 100
+                    
+                    # Double check: distance must be below tolerance AND confidence above threshold
+                    if best_distance <= TOLERANCE and confidence >= MIN_SIMILARITY_PERCENT:
+                        name = known_names[best_match_idx]
+                        member_id = known_ids[best_match_idx]
+                        print(f"[RECOG] Match found: {name} (distance: {best_distance:.3f}, confidence: {confidence:.1f}%)")
+                    else:
+                        print(f"[RECOG] Match too weak: distance={best_distance:.3f} (tolerance={TOLERANCE}), confidence={confidence:.1f}% (min={MIN_SIMILARITY_PERCENT}%)")
+                        # Keep as Unknown
+                        name = "Unknown"
+                        confidence = 0.0
+                        member_id = None
             
             # Check device cooldown for this specific person
             cooldown_info = None
