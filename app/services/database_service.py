@@ -79,19 +79,52 @@ def save_encoding_to_db(member_id: int, encoding: np.ndarray):
         raise
 
 def build_known_encodings_fast() -> Tuple[List[np.ndarray], List[str], List[int], Dict[int, int]]:
-    """Build known encodings from database"""
+    """Build known encodings from database - compatible with app_old.py structure"""
     try:
         conn = get_conn()
         cur = conn.cursor()
         
-        # Get all active members with encodings
-        cur.execute("""
-            SELECT m.id, m.member_id, m.first_name, m.last_name, m.enc
-            FROM member m
-            WHERE m.enc IS NOT NULL 
-            AND m.status = 'active'
-            ORDER BY m.id
-        """)
+        # Try different query structures to match the database
+        # First try: check if we have the same structure as app_old.py
+        try:
+            # Check if status column exists and what type it is
+            cur.execute("DESCRIBE member")
+            columns = cur.fetchall()
+            column_names = [col[0] for col in columns]
+            
+            print(f"[DB] Available columns: {column_names}")
+            
+            # Build query based on available columns
+            if 'status' in column_names:
+                # Try with status = 1 (integer) first
+                cur.execute("""
+                    SELECT id, member_id, first_name, last_name, enc
+                    FROM member
+                    WHERE enc IS NOT NULL 
+                    AND status = 1
+                    AND LENGTH(enc) = 1024
+                    ORDER BY id
+                """)
+            else:
+                # No status column, just get all with encodings
+                cur.execute("""
+                    SELECT id, member_id, first_name, last_name, enc
+                    FROM member
+                    WHERE enc IS NOT NULL 
+                    AND LENGTH(enc) = 1024
+                    ORDER BY id
+                """)
+                
+        except Exception as e:
+            print(f"[DB] Error with status query, trying without status: {e}")
+            # Fallback: get all members with encodings
+            cur.execute("""
+                SELECT id, member_id, first_name, last_name, enc
+                FROM member
+                WHERE enc IS NOT NULL 
+                AND LENGTH(enc) = 1024
+                ORDER BY id
+            """)
         
         results = cur.fetchall()
         cur.close()
@@ -102,9 +135,12 @@ def build_known_encodings_fast() -> Tuple[List[np.ndarray], List[str], List[int]
         member_ids = []
         gym_member_mapping = {}
         
+        print(f"[DB] Found {len(results)} members with encodings")
+        
         for db_member_id, gym_member_id, first_name, last_name, enc_data in results:
             if enc_data:
                 try:
+                    # Decode encoding (should be 128 float64 values = 1024 bytes)
                     encoding = np.frombuffer(enc_data, dtype=np.float64)
                     if len(encoding) == 128:
                         encodings.append(encoding)
@@ -117,12 +153,13 @@ def build_known_encodings_fast() -> Tuple[List[np.ndarray], List[str], List[int]
                         names.append(full_name)
                         member_ids.append(db_member_id)
                         gym_member_mapping[db_member_id] = gym_member_id
+                        print(f"[DB] Loaded encoding for member_id={db_member_id} name={full_name}")
                     else:
-                        print(f"[DB] Invalid encoding size for member_id={db_member_id}: {len(encoding)}")
+                        print(f"[DB] Invalid encoding size for member_id={db_member_id}: {len(encoding)} (expected 128)")
                 except Exception as e:
                     print(f"[DB] Error processing encoding for member_id={db_member_id}: {e}")
         
-        print(f"[DB] Loaded {len(encodings)} encodings from database")
+        print(f"[DB] Successfully loaded {len(encodings)} encodings from database")
         return encodings, names, member_ids, gym_member_mapping
         
     except Error as e:

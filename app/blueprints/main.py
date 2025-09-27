@@ -782,6 +782,33 @@ INDEX_HTML = """
       requestAnimationFrame(drawDisplay);
     }
     
+    // Door ID functionality
+    function setDoorIdParam(doorId) {
+      const deviceId = getDeviceId();
+      if (!doorId) {
+        console.log('[DOOR] No door id provided');
+        return;
+      }
+      console.log(`[DOOR] Setting door ID for device ${deviceId} to: ${doorId}`);
+      fetch('/update_door_id', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-ID': deviceId
+        },
+        body: JSON.stringify({ door_id: doorId, device_id: deviceId })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          updateStatus(`Door set: ${doorId}`, 'success');
+        } else {
+          updateStatus(`Failed set door: ${data.error}`, 'error');
+        }
+      })
+      .catch(err => updateStatus(`Error set door: ${err}`, 'error'));
+    }
+
     // Load saved theme on page load
     document.addEventListener('DOMContentLoaded', function() {
       const savedTheme = localStorage.getItem('theme');
@@ -790,6 +817,14 @@ INDEX_HTML = """
       if (savedTheme === 'dark') {
         document.body.setAttribute('data-theme', 'dark');
         themeIcon.textContent = '☀️';
+      }
+      
+      // Handle door ID from URL parameters
+      const params = new URLSearchParams(window.location.search);
+      const paramDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+      if (paramDoorId) {
+        localStorage.setItem('doorId', paramDoorId);
+        setDoorIdParam(paramDoorId);
       }
     });
 
