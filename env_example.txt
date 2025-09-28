@@ -10,7 +10,15 @@ FLASK_SECRET_KEY=change-me
 
 # Gym API Configuration
 GYM_API_KEY=your_gym_api_key_here
+GYM_BASE_URL=your_gym_base_url
+GYM_LOGIN_URL=your_gym_login_url
+GYM_PROFILE_URL=your_gym_profile_url
 GYM_DOOR_ID=19456
+
+# Horizon GCloud Configuration
+HORIZON_FASTAPI_URL=https://ftlhorizon.com
+GCS_BUCKET_NAME=ftlhorizon
+GCS_BASE_URL_ASSET=https://cdn.ftlhorizon.com/
 
 # Batch Configuration
 ENC_BATCH_SIZE=10

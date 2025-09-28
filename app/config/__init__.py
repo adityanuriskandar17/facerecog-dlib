@@ -17,6 +17,11 @@ GYM_BASE_URL = os.getenv('GYM_BASE_URL', '')
 GYM_LOGIN_URL = os.getenv('GYM_LOGIN_URL', '')
 GYM_PROFILE_URL = os.getenv('GYM_PROFILE_URL', '')
 
+# Horizon GCloud Configuration
+HORIZON_FASTAPI_URL = os.getenv('HORIZON_FASTAPI_URL', 'https://ftlhorizon.com')
+GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME', 'ftlhorizon')
+GCS_BASE_URL_ASSET = os.getenv('GCS_BASE_URL_ASSET', 'https://cdn.ftlhorizon.com/')
+
 # Flask Configuration
 FLASK_SECRET_KEY = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-here')
 

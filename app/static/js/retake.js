@@ -17,6 +17,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const registerActions = document.getElementById('registerActions');
     const burstRegisterBtn = document.getElementById('burstRegisterBtn');
     const uploadGymBtn = document.getElementById('uploadGymBtn');
+    const uploadHorizonBtn = document.getElementById('uploadHorizonBtn');
     
     let currentStream = null;
 
@@ -294,6 +295,33 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch (e) {
             if (loader) loader.style.display = 'none';
             alert('Gagal upload foto: ' + (e?.message || e));
+        }
+    });
+
+    // Upload the most recent preview photo to Horizon GCloud
+    if (uploadHorizonBtn) uploadHorizonBtn.addEventListener('click', async () => {
+        try {
+            if (!preview.src) {
+                alert('Tidak ada foto untuk diupload. Ambil foto terlebih dahulu.');
+                return;
+            }
+            if (loader) { loader.style.display = 'block'; if (burstProgress) burstProgress.textContent = 'Mengupload foto ke Horizon GCloud...'; }
+            const res = await fetch('/update-member-photo-horizon', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ image: preview.src })
+            });
+            const json = await res.json();
+            if (loader) loader.style.display = 'none';
+            if (!json.success) {
+                alert('Gagal update foto ke Horizon: ' + (json?.response?.error || json?.error || 'unknown'));
+                return;
+            }
+            alert('Foto berhasil diupdate ke Horizon GCloud.');
+        } catch (e) {
+            if (loader) loader.style.display = 'none';
+            alert('Gagal upload foto ke Horizon: ' + (e?.message || e));
         }
     });
 

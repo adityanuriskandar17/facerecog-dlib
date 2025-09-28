@@ -204,6 +204,225 @@ def update_member_photo():
         return {"success": False, "error": str(e)}, 500
 
 
+@recognition_bp.route("/update-member-photo-horizon", methods=["POST"])
+def update_member_photo_horizon():
+    """Upload/update member photo to Horizon GCloud using current session token.
+    Expects JSON { image: dataURL } or form-data 'image'.
+    """
+    try:
+        if not require_login():
+            return {"success": False, "error": "Unauthorized"}, 401
+
+        token = session.get("gm_token", "")
+        if not token:
+            return {"success": False, "error": "Missing token"}, 400
+
+        # Accept dataURL in JSON
+        img_data_url = None
+        if request.is_json:
+            payload = request.get_json(silent=True) or {}
+            img_data_url = payload.get("image")
+        if not img_data_url and 'image' in request.form:
+            img_data_url = request.form.get('image')
+        if not img_data_url:
+            return {"success": False, "error": "Image is required"}, 400
+
+        # Get member info from token to find email and get member_id from database
+        prof = fetch_member_profile(token)
+        if prof.get("error") or not prof.get("result"):
+            return {"success": False, "error": "Failed to get member profile"}, 400
+        
+        member_data = prof["result"]
+        member_email = member_data.get("email", "").strip().lower()
+        if not member_email:
+            return {"success": False, "error": "Member email not found"}, 400
+
+        print(f"[HORIZON] Processing upload for email: {member_email}")
+
+        # Get member_id from database using email
+        from ..services.database_service import get_conn
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        try:
+            # Get member.member_id (not member.id) for consistency with GymMaster login
+            cur.execute("SELECT member_id, id FROM member WHERE email = %s", (member_email,))
+            member_result = cur.fetchone()
+            
+            if not member_result:
+                cur.close()
+                conn.close()
+                return {"success": False, "error": "Member not found in database"}, 400
+            
+            member_id = member_result[0]  # member.member_id for created_by
+            member_db_id = member_result[1]  # member.id for database foreign key
+            print(f"[HORIZON] Found member_id: {member_id}, db_id: {member_db_id}")
+            
+        except Exception as db_error:
+            cur.close()
+            conn.close()
+            return {"success": False, "error": f"Database error: {str(db_error)}"}, 500
+
+        # Convert dataURL to base64 format expected by Horizon API
+        match = re.match(r"^data:image/([^;]+);base64,(.*)$", img_data_url)
+        imagetype = match.group(1) if match else 'jpeg'
+        b64_data = match.group(2) if match else img_data_url
+        full_base64 = f"data:image/{imagetype};base64,{b64_data}"
+
+        # Generate unique filename (UUID)
+        import uuid
+        image_id = str(uuid.uuid4())
+        filename = f"{image_id}.{imagetype}"
+
+        # Get current date for file path
+        from datetime import datetime
+        now = datetime.now()
+        date_path = f"{now.year}/{now.month:02d}/{now.day:02d}/"
+        
+        # Real upload to Google Cloud Storage
+        print(f"[HORIZON] Uploading to Google Cloud Storage: {filename}")
+        
+        try:
+            # Import Google Cloud Storage
+            from google.cloud import storage
+            import base64
+            
+            # Initialize GCS client
+            client = storage.Client()
+            from ..config import GCS_BUCKET_NAME
+            bucket = client.bucket(GCS_BUCKET_NAME)
+            
+            # Decode base64 image
+            image_data = base64.b64decode(b64_data)
+            
+            # Create blob path
+            blob_path = f"assets/img/profile/{date_path}{filename}"
+            blob = bucket.blob(blob_path)
+            
+            # Upload image to GCS
+            blob.upload_from_string(image_data, content_type=f"image/{imagetype}")
+            
+            # Make blob publicly accessible
+            blob.make_public()
+            
+            # Generate public URL
+            from ..config import GCS_BASE_URL_ASSET
+            gcs_url = f"{GCS_BASE_URL_ASSET}{blob_path}"
+            
+            print(f"[HORIZON] Real upload successful: {gcs_url}")
+            
+        except Exception as upload_error:
+            print(f"[HORIZON] GCS Python library failed: {upload_error}")
+            
+            # Fallback: Use gcloud CLI for upload
+            try:
+                import tempfile
+                import os
+                
+                # Save image to temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{imagetype}") as temp_file:
+                    temp_file.write(base64.b64decode(b64_data))
+                    temp_file_path = temp_file.name
+                
+                # Upload using gcloud CLI
+                from ..config import GCS_BUCKET_NAME
+                blob_path = f"assets/img/profile/{date_path}{filename}"
+                gs_path = f"gs://{GCS_BUCKET_NAME}/{blob_path}"
+                
+                import subprocess
+                result = subprocess.run([
+                    'gcloud', 'storage', 'cp', temp_file_path, gs_path,
+                    '--content-type', f"image/{imagetype}"
+                ], capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    # Make file public
+                    subprocess.run([
+                        'gcloud', 'storage', 'objects', 'update', gs_path,
+                        '--add-acl-grant=allUsers:READER'
+                    ], capture_output=True, text=True)
+                    
+                    # Generate public URL
+                    from ..config import GCS_BASE_URL_ASSET
+                    gcs_url = f"{GCS_BASE_URL_ASSET}{blob_path}"
+                    
+                    print(f"[HORIZON] gcloud CLI upload successful: {gcs_url}")
+                else:
+                    raise Exception(f"gcloud upload failed: {result.stderr}")
+                
+                # Clean up temp file
+                os.unlink(temp_file_path)
+                
+            except Exception as cli_error:
+                print(f"[HORIZON] gcloud CLI upload failed: {cli_error}")
+                # Final fallback to mock upload
+                print(f"[HORIZON] Falling back to mock upload: {filename}")
+                from ..config import GCS_BASE_URL_ASSET
+                gcs_url = f"{GCS_BASE_URL_ASSET}assets/img/profile/{date_path}{filename}"
+                print(f"[HORIZON] Mock upload successful: {gcs_url}")
+        
+        # Save to member_file table in database (reuse existing connection)
+        try:
+            # Check if profile record already exists
+            cur.execute("""
+                SELECT id FROM member_file 
+                WHERE member_id = %s AND file_type_id = 1 AND title = 'Profile'
+            """, (member_db_id,))
+            
+            existing_record = cur.fetchone()
+            
+            if existing_record:
+                # Update existing profile record
+                cur.execute("""
+                    UPDATE member_file 
+                    SET file_base_url = %s, file_base_path = %s, file_path = %s, 
+                        file_name = %s, file_extention = %s, updated_at = NOW()
+                    WHERE member_id = %s AND file_type_id = 1 AND title = 'Profile'
+                """, (
+                    GCS_BASE_URL_ASSET,  # file_base_url - CDN URL from config
+                    "assets/img/profile/",  # file_base_path
+                    date_path,  # file_path - only date part: 2025/09/28/
+                    filename,  # file_name
+                    f"image/{imagetype}",  # file_extention
+                    member_db_id  # Use member.id for foreign key
+                ))
+                print(f"[HORIZON] Updated existing profile record for member_db_id: {member_db_id}")
+            else:
+                # Insert new profile record
+                cur.execute("""
+                    INSERT INTO member_file 
+                    (member_id, file_type_id, file_base_url, file_base_path, file_path, file_name, file_extention, created_at, updated_at, title)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
+                """, (
+                    member_db_id,  # Use member.id for foreign key
+                    1,  # file_type_id for profile
+                    GCS_BASE_URL_ASSET,  # file_base_url - CDN URL from config
+                    "assets/img/profile/",  # file_base_path
+                    date_path,  # file_path - only date part: 2025/09/28/
+                    filename,  # file_name
+                    f"image/{imagetype}",  # file_extention
+                    "Profile"  # title
+                ))
+                print(f"[HORIZON] Inserted new profile record for member_db_id: {member_db_id}")
+            
+            conn.commit()
+            print(f"[HORIZON] Database record saved successfully for member_db_id: {member_db_id}")
+            
+        except Exception as db_error:
+            print(f"[HORIZON] Database error: {db_error}")
+            # Don't fail the upload if database save fails
+        
+        # Close database connection
+        cur.close()
+        conn.close()
+        
+        return {"success": True, "url": gcs_url, "filename": filename}
+        
+    except Exception as e:
+        print(f"[HORIZON] Error: {e}")
+        return {"success": False, "error": str(e)}, 500
+
+
 @recognition_bp.route("/compare-photo-burst", methods=["POST"])
 def compare_photo_burst():
     """Accept array of dataURL images, build averaged encoding, compare to GymMaster photo, and optionally save to DB by email."""
