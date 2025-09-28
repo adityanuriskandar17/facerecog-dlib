@@ -224,7 +224,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Send to burst endpoint with email from server (fallback to hardcoded if empty)
-        const email = (window.CURRENT_EMAIL || '').trim() || 'adityanuriskandar7@gmail.com';
+        const email = (window.CURRENT_EMAIL || '').trim()
         try {
             if (burstProgress) burstProgress.textContent = 'Menghitung encoding...';
             const res = await fetch('/compare-photo-burst', {
@@ -278,6 +278,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 alert('Tidak ada foto untuk diupload. Ambil foto terlebih dahulu.');
                 return;
             }
+            
+            // Konfirmasi sebelum upload
+            const confirmUpload = confirm('Apakah Anda yakin ingin mengupdate foto ke GymMaster?');
+            if (!confirmUpload) {
+                return;
+            }
+            
             if (loader) { loader.style.display = 'block'; if (burstProgress) burstProgress.textContent = 'Mengupload foto ke GymMaster...'; }
             const res = await fetch('/update-member-photo', {
                 method: 'POST',
@@ -305,6 +312,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 alert('Tidak ada foto untuk diupload. Ambil foto terlebih dahulu.');
                 return;
             }
+            
+            // Konfirmasi sebelum upload
+            const confirmUpload = confirm('Apakah Anda yakin ingin mengupdate foto ke Horizon GCloud?');
+            if (!confirmUpload) {
+                return;
+            }
+            
             if (loader) { loader.style.display = 'block'; if (burstProgress) burstProgress.textContent = 'Mengupload foto ke Horizon GCloud...'; }
             const res = await fetch('/update-member-photo-horizon', {
                 method: 'POST',

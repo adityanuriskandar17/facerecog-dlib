@@ -325,7 +325,7 @@ def update_member_photo_horizon():
                     temp_file_path = temp_file.name
                 
                 # Upload using gcloud CLI
-                from ..config import GCS_BUCKET_NAME
+                from ..config import GCS_
                 blob_path = f"assets/img/profile/{date_path}{filename}"
                 gs_path = f"gs://{GCS_BUCKET_NAME}/{blob_path}"
                 
@@ -541,3 +541,26 @@ def compare_photo_burst():
     except Exception as e:
         print(f"[COMPARE_BURST] Error: {e}")
         return {"success": False, "error": str(e)}, 500
+
+@recognition_bp.route("/test_member_ids")
+def test_member_ids():
+    """Test endpoint to verify member ID mapping"""
+    try:
+        # Get a sample of loaded member IDs and their mappings
+        sample_data = []
+        for i, member_id in enumerate(recognizer.known_ids[:5]):  # First 5 members
+            gym_member_id = recognizer.gym_member_id_mapping.get(member_id)
+            sample_data.append({
+                "member_id": member_id,
+                "gym_member_id": gym_member_id,
+                "name": recognizer.known_names[i] if i < len(recognizer.known_names) else "Unknown"
+            })
+        
+        return {
+            "success": True,
+            "total_loaded": len(recognizer.known_ids),
+            "sample_data": sample_data,
+            "message": "member_id should be member.member_id (gym ID), gym_member_id should be member.id (db ID)"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}

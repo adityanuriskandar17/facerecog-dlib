@@ -281,8 +281,8 @@ def fetch_member_images() -> List[Tuple[int, str, str, str]]:
     """
     sql = """
     SELECT
-        m.id AS member_id,
-        m.member_id AS gym_member_id,
+        m.member_id AS member_id,
+        m.id AS gym_member_id,
         COALESCE(m.first_name, CONCAT('Member_', m.id)) AS first_name,
         COALESCE(m.last_name, '') AS last_name,
         CONCAT(f.file_base_url, f.file_base_path, f.file_path, f.file_name) AS full_url,
@@ -637,9 +637,9 @@ def build_known_encodings_fast() -> Tuple[List[np.ndarray], List[str], List[int]
                     
                     encodings.append(stored_encoding)
                     names.append(full_name)
-                    member_ids.append(member_id)
-                    gym_member_id_mapping[member_id] = gym_member_id
-                    print(f"[ENC] Loaded from cache member_id={member_id} name={full_name}")
+                    member_ids.append(member_id)  # This is now m.member_id (gym member ID for display)
+                    gym_member_id_mapping[member_id] = gym_member_id  # This is now m.id (database ID for API)
+                    print(f"[ENC] Loaded from cache member_id={member_id} (m.member_id) gym_member_id={gym_member_id} (m.id) name={full_name}")
                 else:
                     skipped += 1
                     
@@ -729,7 +729,7 @@ def gym_open_gate(token: str) -> dict:
         print(f"[GYM] Gate open error: {e}")
         return {"success": False, "error": str(e)}
 
-def gym_open_gate_with_door(token: str, door_id: str) -> dict:
+def gym_open_gate_with_door(token: str, door_id: str, correct_member_id: int = None) -> dict:
     """
     Open gym gate using token with specific door ID
     """
@@ -764,7 +764,9 @@ def gym_open_gate_with_door(token: str, door_id: str) -> dict:
             result = data.get("result", {}).get("response", {})
             popup_style = result.get("popup_style", "GRANTED")
             member_name = result.get("member_name", "Unknown Member")
-            member_id = result.get("member_id", "N/A")
+            # Use correct_member_id from database table if provided, otherwise fallback to API response
+            member_id = correct_member_id if correct_member_id is not None else result.get("member_id", "N/A")
+            print(f"[DEBUG] correct_member_id: {correct_member_id}, API member_id: {result.get('member_id')}, final member_id: {member_id}")
             message = result.get("message", f"Gate {door_id} opened successfully")
             
             return {
@@ -784,7 +786,8 @@ def gym_open_gate_with_door(token: str, door_id: str) -> dict:
             result = data.get("result", {}).get("response", {})
             popup_style = result.get("popup_style", "DENIED")
             member_name = result.get("member_name", "Unknown Member")
-            member_id = result.get("member_id", "N/A")
+            # Use correct_member_id from database table if provided, otherwise fallback to API response
+            member_id = correct_member_id if correct_member_id is not None else result.get("member_id", "N/A")
             message = result.get("message", f"Gate {door_id} access denied")
             
             return {
@@ -824,19 +827,22 @@ def process_member_detection(member_id: int, member_name: str) -> dict:
     
     return {"success": True, "message": f"Welcome {member_name}! Gate opened successfully."}
 
-def process_member_detection_with_door(member_id: int, member_name: str, door_id: str) -> dict:
+def process_member_detection_with_door(gym_member_id: int, member_name: str, door_id: str, db_member_id: int = None) -> dict:
     """
     Process member detection with specific door ID: login and open gate
     """
-    print(f"[GYM] Processing detection for {member_name} (ID: {member_id}) with door {door_id}")
+    print(f"[GYM] Processing detection for {member_name} (Gym ID: {gym_member_id}, DB ID: {db_member_id}) with door {door_id}")
     
-    # Step 1: Login to get token
-    login_result = gym_login(member_id)
+    # Step 1: Login to get token using gym_member_id for API
+    login_result = gym_login(gym_member_id)
     if not login_result["success"]:
         return {"success": False, "error": f"Login failed: {login_result['error']}"}
     
     # Step 2: Open gate using token with specific door ID
-    gate_result = gym_open_gate_with_door(login_result["token"], door_id)
+    # Pass the database member_id for popup display, fallback to gym_member_id if not provided
+    display_member_id = db_member_id if db_member_id is not None else gym_member_id
+    print(f"[DEBUG] process_member_detection_with_door: gym_member_id={gym_member_id}, db_member_id={db_member_id}, display_member_id={display_member_id}")
+    gate_result = gym_open_gate_with_door(login_result["token"], door_id, correct_member_id=display_member_id)
     
     # Return the result with popup information
     if gate_result["success"]:
@@ -2797,6 +2803,7 @@ def recognize():
             }
         
         # Always add face data for display (bounding box should always show)
+        # Now member_id is already m.member_id (correct for display)
         face_data = {
             "x": int(left),
             "y": int(top),
@@ -2804,7 +2811,7 @@ def recognize():
             "height": int(bottom - top),
             "name": name,
             "confidence": confidence,
-            "member_id": member_id
+            "member_id": member_id  # Now this is m.member_id (correct for display)
         }
         
         # Process gym gate if member is recognized
@@ -2826,7 +2833,9 @@ def recognize():
                     
                     print(f"[GYM] Using door ID {current_door_id} for device {device_id}")
                     
-                    gym_result = process_member_detection_with_door(gym_member_id, name, current_door_id)
+                    print(f"[DEBUG] Main recognition: member_id={member_id} (should be m.member_id), gym_member_id={gym_member_id} (should be m.id), name={name}")
+                    # Now member_id is m.member_id (for display), gym_member_id is m.id (for API)
+                    gym_result = process_member_detection_with_door(gym_member_id, name, current_door_id, db_member_id=member_id)
                     if gym_result["success"]:
                         print(f"[GYM] ✅ {gym_result['message']}")
                         # Mark successful login to start cooldown for this device only
@@ -2850,7 +2859,7 @@ def recognize():
                         "show": True,
                         "style": "GRANTED",
                         "member_name": name,
-                        "member_id": recognizer.gym_member_id_mapping.get(member_id),
+                        "member_id": member_id,  # Now member_id is m.member_id (correct for display)
                         "message": f"Access Granted for {name}"
                     }
         
@@ -2883,6 +2892,24 @@ def recognize():
 def reload_route():
     threading.Thread(target=recognizer.reload, daemon=True).start()
     return "Reload encodings dipicu. Tunggu 1-3 detik lalu refresh stream."
+
+@app.route("/force_reload")
+def force_reload_route():
+    """Force reload with cache clearing"""
+    try:
+        # Clear Redis cache if enabled
+        if REDIS_ENABLED and redis_client:
+            try:
+                redis_client.delete("face_encodings_cache")
+                print("[FORCE_RELOAD] Cleared Redis cache")
+            except Exception as e:
+                print(f"[FORCE_RELOAD] Redis clear error: {e}")
+        
+        # Force reload
+        recognizer.reload()
+        return "Force reload completed. Database structure updated."
+    except Exception as e:
+        return f"Force reload error: {str(e)}"
 
 @app.route("/check_new_members")
 def check_new_members_route():

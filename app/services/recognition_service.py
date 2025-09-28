@@ -85,7 +85,7 @@ class Recognizer:
             
             mapping = {}
             for db_member_id, gym_member_id in cur.fetchall():
-                mapping[db_member_id] = gym_member_id
+                mapping[gym_member_id] = db_member_id  # Map gym_member_id to db_member_id for API
             
             cur.close()
             conn.close()

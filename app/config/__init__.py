@@ -28,7 +28,7 @@ FLASK_SECRET_KEY = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-here')
 # Face Recognition Configuration
 TOLERANCE = float(os.getenv('TOLERANCE', '0.6'))  # Standard tolerance for face recognition
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))
-MIN_SIMILARITY_PERCENT = float(os.getenv('MIN_SIMILARITY_PERCENT', '50'))  # Lower threshold to allow Aditya detection
+MIN_SIMILARITY_PERCENT = float(os.getenv('MIN_SIMILARITY_PERCENT', '50'))  
 
 # Redis Configuration
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')

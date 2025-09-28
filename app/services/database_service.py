@@ -151,9 +151,9 @@ def build_known_encodings_fast() -> Tuple[List[np.ndarray], List[str], List[int]
                             full_name = first_name.strip() or f"Member_{db_member_id}"
                         
                         names.append(full_name)
-                        member_ids.append(db_member_id)
-                        gym_member_mapping[db_member_id] = gym_member_id
-                        print(f"[DB] Loaded encoding for member_id={db_member_id} name={full_name}")
+                        member_ids.append(gym_member_id)  # Use gym_member_id (member.member_id) for display
+                        gym_member_mapping[gym_member_id] = db_member_id  # Map gym_member_id to db_member_id for API
+                        print(f"[DB] Loaded encoding for member_id={gym_member_id} (member.member_id) db_id={db_member_id} name={full_name}")
                     else:
                         print(f"[DB] Invalid encoding size for member_id={db_member_id}: {len(encoding)} (expected 128)")
                 except Exception as e:
