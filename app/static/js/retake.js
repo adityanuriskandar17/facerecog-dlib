@@ -190,6 +190,24 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (pct >= 75) { category = 'Sangat mirip'; catClass = 'label-high'; }
                 else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
 
+                // Detect different person (low similarity)
+                if (pct < 30) {
+                    alert('⚠️ ORANG BERBEDA DETECTED!\n\nKemiripan: ' + pct + '%\nIni adalah orang yang berbeda dengan foto saat ini.\n\nSilakan ambil foto ulang dengan orang yang sama.');
+                    
+                    // Reset the interface
+                    if (resultBar) {
+                        resultBar.textContent = 'Orang berbeda terdeteksi! Ambil foto ulang.';
+                        resultBar.className = 'similarity-result no-match';
+                    }
+                    if (meter) meter.style.display = 'none';
+                    if (label) label.style.display = 'none';
+                    if (processBtn) processBtn.style.display = 'inline-block';
+                    
+                    // Clear captured image data to force retake
+                    window.capturedImageData = null;
+                    return;
+                }
+
                 if (resultBar) {
                     resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist})`;
                     resultBar.classList.remove('match','no-match');
@@ -375,6 +393,22 @@ document.addEventListener('DOMContentLoaded', function() {
                 let catClass = 'label-low';
                 if (pct >= 75) { category = 'Sangat mirip'; catClass = 'label-high'; }
                 else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
+                
+                // Detect different person (low similarity) for burst
+                if (pct < 30) {
+                    alert('⚠️ ORANG BERBEDA DETECTED!\n\nKemiripan: ' + pct + '%\nIni adalah orang yang berbeda dengan foto saat ini.\n\nSilakan ambil foto ulang dengan orang yang sama.');
+                    
+                    // Reset the interface
+                    if (resultBar) {
+                        resultBar.textContent = 'Orang berbeda terdeteksi! Ambil foto ulang.';
+                        resultBar.className = 'similarity-result no-match';
+                    }
+                    if (meter) meter.style.display = 'none';
+                    if (label) label.style.display = 'none';
+                    if (burstStartBtn) burstStartBtn.style.display = 'inline-block';
+                    
+                    return;
+                }
                 
                 if (resultBar) resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist})`;
                 if (meterFill) meterFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
