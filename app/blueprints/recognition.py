@@ -10,6 +10,24 @@ import cv2
 # Create recognition blueprint
 recognition_bp = Blueprint('recognition', __name__)
 
+def preprocess_image_grayscale(image_rgb):
+    """Preprocess image to grayscale for better face recognition accuracy"""
+    try:
+        # Convert RGB to grayscale
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        
+        # Convert back to RGB format (3 channels) for face_recognition library
+        # face_recognition expects RGB format even for grayscale processing
+        gray_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        
+        print(f"[GRAYSCALE] Preprocessed image to grayscale: {gray_rgb.shape}")
+        return gray_rgb
+        
+    except Exception as e:
+        print(f"[GRAYSCALE] Error preprocessing image: {e}")
+        # Return original image if grayscale conversion fails
+        return image_rgb
+
 @recognition_bp.route('/update_door_id', methods=['POST'])
 def update_door_id():
     """Update door ID for device"""
@@ -108,6 +126,11 @@ def compare_photo():
 
         # Load GymMaster photo
         rgb_gym = url_to_rgb_array(gym_photo_url)
+        
+        # Preprocess both images to grayscale for better accuracy
+        print("[COMPARE_PHOTO] Preprocessing images to grayscale...")
+        rgb_captured = preprocess_image_grayscale(rgb_captured)
+        rgb_gym = preprocess_image_grayscale(rgb_gym)
 
         # Find face boxes
         boxes_cap = safe_face_recognition("face_locations", rgb_captured, model="hog")
@@ -463,6 +486,7 @@ def compare_photo_burst():
         # Build encodings for burst
         enc_list = []
         processed = 0
+        print("[COMPARE_BURST] Processing burst images with grayscale preprocessing...")
         for data_url in images:
             try:
                 match = re.match(r"^data:image/[^;]+;base64,(.*)$", data_url)
@@ -473,6 +497,10 @@ def compare_photo_burst():
                 if bgr is None:
                     continue
                 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                
+                # Preprocess to grayscale for better accuracy
+                rgb = preprocess_image_grayscale(rgb)
+                
                 boxes = safe_face_recognition("face_locations", rgb, model="hog")
                 if not boxes:
                     continue
@@ -494,8 +522,11 @@ def compare_photo_burst():
             print(f"[COMPARE_BURST] Averaging error: {e}")
             return {"success": False, "error": "Failed to aggregate encodings"}, 500
 
-        # Gym photo encoding
+        # Gym photo encoding with grayscale preprocessing
+        print("[COMPARE_BURST] Processing GymMaster photo with grayscale preprocessing...")
         rgb_gym = url_to_rgb_array(gym_photo_url)
+        rgb_gym = preprocess_image_grayscale(rgb_gym)
+        
         boxes_gym = safe_face_recognition("face_locations", rgb_gym, model="hog")
         if not boxes_gym:
             return {"success": False, "error": "No face detected in GymMaster photo"}, 200

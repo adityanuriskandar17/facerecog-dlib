@@ -74,12 +74,13 @@ class Recognizer:
             if not self.known_ids:
                 return {}
             
+            # known_ids contains gym_member_id (member.member_id), not database internal ID
             placeholders = ','.join(['%s'] * len(self.known_ids))
             cur.execute(
                 f"""
                 SELECT m.id, m.member_id 
                 FROM member m
-                WHERE m.id IN ({placeholders})
+                WHERE m.member_id IN ({placeholders})
                 """,
                 list(self.known_ids)
             )
@@ -87,6 +88,7 @@ class Recognizer:
             mapping = {}
             for db_member_id, gym_member_id in cur.fetchall():
                 mapping[gym_member_id] = db_member_id  # Map gym_member_id to db_member_id for API
+                print(f"[MAPPING] Mapped gym_member_id={gym_member_id} -> db_member_id={db_member_id}")
             
             cur.close()
             conn.close()
@@ -106,16 +108,17 @@ class Recognizer:
         try:
             print(f"[AUTO-CHECK] Checking for new members... (loaded: {len(self.loaded_member_ids)})")
             
-            # First, cleanup removed members from cache
-            if REDIS_ENABLED:
-                from .redis_service import auto_cleanup_cache
-                auto_cleanup_cache()
-            
             # Get all active members with enc data from database
             current_member_ids = self._get_active_members_with_enc()
             
             print(f"[AUTO-CHECK] Current DB members with enc: {len(current_member_ids)}")
             print(f"[AUTO-CHECK] Loaded members: {len(self.loaded_member_ids)}")
+            
+            # Check for removed members (members in loaded but not in database)
+            removed_member_ids = self.loaded_member_ids - current_member_ids
+            if removed_member_ids:
+                print(f"[AUTO-CHECK] Found {len(removed_member_ids)} removed members: {removed_member_ids}")
+                self._cleanup_removed_members(removed_member_ids)
             
             # Find new members
             new_member_ids = current_member_ids - self.loaded_member_ids
@@ -131,13 +134,60 @@ class Recognizer:
             import traceback
             traceback.print_exc()
     
+    def _cleanup_removed_members(self, removed_member_ids: set):
+        """Clean up removed members from memory and cache"""
+        try:
+            print(f"[AUTO-CHECK] Cleaning up {len(removed_member_ids)} removed members...")
+            
+            # Remove from memory
+            with self.lock:
+                # Find indices to remove
+                indices_to_remove = []
+                for i, member_id in enumerate(self.known_ids):
+                    if member_id in removed_member_ids:
+                        indices_to_remove.append(i)
+                
+                # Remove in reverse order to maintain indices
+                for i in reversed(indices_to_remove):
+                    if i < len(self.known_encodings):
+                        del self.known_encodings[i]
+                    if i < len(self.known_names):
+                        del self.known_names[i]
+                    if i < len(self.known_ids):
+                        del self.known_ids[i]
+                
+                # Update loaded member IDs
+                self.loaded_member_ids -= removed_member_ids
+                
+                # Clean up gym member mapping
+                for member_id in removed_member_ids:
+                    if member_id in self.gym_member_id_mapping:
+                        del self.gym_member_id_mapping[member_id]
+            
+            # Update Redis cache
+            if REDIS_ENABLED and self.known_encodings:
+                from .redis_service import cache_encodings
+                cache_encodings(self.known_encodings, self.known_names, self.known_ids)
+                print(f"[AUTO-CHECK] Updated Redis cache with {len(self.known_encodings)} members")
+            elif REDIS_ENABLED:
+                from .redis_service import clear_redis_cache
+                clear_redis_cache()
+                print("[AUTO-CHECK] Cleared Redis cache - no valid members")
+            
+            print(f"[AUTO-CHECK] Successfully cleaned up {len(removed_member_ids)} removed members")
+            
+        except Exception as e:
+            print(f"[AUTO-CHECK] Error cleaning up removed members: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def _get_active_members_with_enc(self):
         """Get all active members that have enc data"""
         try:
             conn = get_conn()
             cur = conn.cursor()
             
-            # Get all members with enc data
+            # Get all members with enc data - use member.id (database ID)
             cur.execute("""
                 SELECT m.id 
                 FROM member m
@@ -150,6 +200,7 @@ class Recognizer:
             cur.close()
             conn.close()
             
+            print(f"[AUTO-CHECK] Found {len(member_ids)} active members with enc data: {member_ids}")
             return member_ids
             
         except Exception as e:
@@ -612,8 +663,30 @@ def process_recognition(request, device_id):
                     # Double check: distance must be below tolerance AND confidence above threshold
                     if best_distance <= TOLERANCE and confidence >= MIN_SIMILARITY_PERCENT:
                         name = known_names[best_match_idx]
-                        member_id = known_ids[best_match_idx]
+                        # Get gym member ID from mapping instead of using known_ids directly
+                        db_member_id = known_ids[best_match_idx]  # This is database internal ID
+                        # Convert to gym member ID using reverse mapping
+                        gym_member_id = None
+                        for gym_id, db_id in recognizer.gym_member_id_mapping.items():
+                            if db_id == db_member_id:
+                                gym_member_id = gym_id
+                                break
+                        
+                        # If mapping is empty, query database directly
+                        if not gym_member_id:
+                            from .database_service import get_conn
+                            conn = get_conn()
+                            cur = conn.cursor()
+                            cur.execute('SELECT member_id FROM member WHERE id = %s', (db_member_id,))
+                            result = cur.fetchone()
+                            if result:
+                                gym_member_id = result[0]
+                            cur.close()
+                            conn.close()
+                        
+                        member_id = gym_member_id if gym_member_id else db_member_id
                         print(f"[RECOG] Match found: {name} (distance: {best_distance:.3f}, confidence: {confidence:.1f}%)")
+                        print(f"[RECOG] Using gym_member_id: {member_id}")
                     else:
                         print(f"[RECOG] Match too weak: distance={best_distance:.3f} (tolerance={TOLERANCE}), confidence={confidence:.1f}% (min={MIN_SIMILARITY_PERCENT}%)")
                         # Keep as Unknown
@@ -685,8 +758,35 @@ def process_recognition(request, device_id):
                             # Get door ID from request or use default
                             door_id = request.args.get('doorid', '19456')
                             
-                            print(f"[GYM] Processing gate opening for {best_face['name']} (gym_member_id: {gym_member_id})")
-                            gym_result = process_member_detection_with_door(gym_member_id, best_face["name"], door_id, db_member_id=gym_member_id)
+                            # Get database internal ID from mapping
+                            # Ensure mapping is built if empty
+                            if not recognizer.gym_member_id_mapping:
+                                print("[GYM] Building gym member mapping...")
+                                recognizer.gym_member_id_mapping = recognizer._build_gym_member_mapping()
+                            
+                            db_member_id = recognizer.gym_member_id_mapping.get(gym_member_id)
+                            if not db_member_id:
+                                # Fallback: query database directly
+                                print(f"[GYM] ❌ No database internal ID found for gym_member_id={gym_member_id}")
+                                print(f"[GYM] Available mappings: {recognizer.gym_member_id_mapping}")
+                                print(f"[GYM] Querying database directly...")
+                                
+                                from .database_service import get_conn
+                                conn = get_conn()
+                                cur = conn.cursor()
+                                cur.execute('SELECT id FROM member WHERE member_id = %s', (gym_member_id,))
+                                result = cur.fetchone()
+                                if result:
+                                    db_member_id = result[0]
+                                    print(f"[GYM] ✅ Found database internal ID: {db_member_id}")
+                                else:
+                                    print(f"[GYM] ❌ No database record found for gym_member_id={gym_member_id}")
+                                    db_member_id = None
+                                cur.close()
+                                conn.close()
+                            
+                            print(f"[GYM] Processing gate opening for {best_face['name']} (gym_member_id: {gym_member_id}, db_member_id: {db_member_id})")
+                            gym_result = process_member_detection_with_door(gym_member_id, best_face["name"], door_id, db_member_id=db_member_id)
                             
                             if gym_result["success"]:
                                 print(f"[GYM] ✅ {gym_result['message']}")

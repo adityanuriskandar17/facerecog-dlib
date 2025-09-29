@@ -134,22 +134,23 @@ def cleanup_removed_members():
         conn = get_conn()
         cur = conn.cursor()
         
-        # Check which members still exist and are active
+        # Check which members still exist and are active (simplified query)
         placeholders = ','.join(['%s'] * len(cached_member_ids))
         cur.execute(f"""
             SELECT m.id 
             FROM member m
-            JOIN member_file f ON f.member_id = m.id
             WHERE m.id IN ({placeholders})
+              AND m.enc IS NOT NULL 
+              AND LENGTH(m.enc) = 1024
               AND m.status = 1
-              AND (f.status IS NULL OR f.status = 1)
-              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
-              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
         """, list(cached_member_ids))
         
         active_member_ids = {row[0] for row in cur.fetchall()}
         cur.close()
         conn.close()
+        
+        print(f"[REDIS_CLEANUP] Cached member IDs: {cached_member_ids}")
+        print(f"[REDIS_CLEANUP] Active member IDs: {active_member_ids}")
         
         # Find members to remove
         removed_member_ids = set(cached_member_ids) - active_member_ids

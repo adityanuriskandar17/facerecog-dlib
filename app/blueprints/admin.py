@@ -173,3 +173,41 @@ def redis_cleanup_route():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@admin_bp.route("/force_cleanup")
+def force_cleanup_route():
+    """Force cleanup removed members from memory and cache"""
+    if not require_login():
+        return redirect(url_for("auth.login"))
+    
+    # Import here to avoid circular imports
+    from ..services.recognition_service import recognizer
+    from ..services.redis_service import clear_redis_cache
+    
+    try:
+        # Get current database state
+        current_member_ids = recognizer._get_active_members_with_enc()
+        
+        # Find removed members
+        removed_member_ids = recognizer.loaded_member_ids - current_member_ids
+        
+        if removed_member_ids:
+            # Clean up removed members
+            recognizer._cleanup_removed_members(removed_member_ids)
+            
+            return jsonify({
+                "success": True,
+                "message": f"Cleaned up {len(removed_member_ids)} removed members",
+                "removed_count": len(removed_member_ids),
+                "remaining_count": len(recognizer.loaded_member_ids)
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "message": "No removed members found",
+                "removed_count": 0,
+                "remaining_count": len(recognizer.loaded_member_ids)
+            })
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
