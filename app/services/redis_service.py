@@ -115,3 +115,91 @@ def redis_reload():
         return {"success": True, "message": "Redis cache reloaded"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+def cleanup_removed_members():
+    """Remove members from cache that no longer exist in database"""
+    if not REDIS_ENABLED:
+        return {"success": False, "error": "Redis not available"}
+    
+    try:
+        from .database_service import get_conn
+        
+        # Get current cached data
+        cached_encodings, cached_names, cached_member_ids = get_cached_encodings()
+        
+        if not cached_member_ids:
+            return {"success": True, "message": "No cached data to clean"}
+        
+        # Get current active members from database
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Check which members still exist and are active
+        placeholders = ','.join(['%s'] * len(cached_member_ids))
+        cur.execute(f"""
+            SELECT m.id 
+            FROM member m
+            JOIN member_file f ON f.member_id = m.id
+            WHERE m.id IN ({placeholders})
+              AND m.status = 1
+              AND (f.status IS NULL OR f.status = 1)
+              AND (f.file_type_id IS NULL OR f.file_type_id = 1)
+              AND LOWER(f.file_base_url) LIKE '%https://ftlhorizon.com/%'
+        """, list(cached_member_ids))
+        
+        active_member_ids = {row[0] for row in cur.fetchall()}
+        cur.close()
+        conn.close()
+        
+        # Find members to remove
+        removed_member_ids = set(cached_member_ids) - active_member_ids
+        
+        if removed_member_ids:
+            print(f"[REDIS_CLEANUP] Removing {len(removed_member_ids)} deleted members: {removed_member_ids}")
+            
+            # Filter out removed members
+            new_encodings = []
+            new_names = []
+            new_member_ids = []
+            
+            for i, member_id in enumerate(cached_member_ids):
+                if member_id in active_member_ids:
+                    new_encodings.append(cached_encodings[i])
+                    new_names.append(cached_names[i])
+                    new_member_ids.append(member_id)
+            
+            # Update cache with cleaned data
+            if new_encodings:
+                cache_encodings(new_encodings, new_names, new_member_ids)
+                print(f"[REDIS_CLEANUP] Updated cache: {len(new_encodings)} members remaining")
+            else:
+                # Clear cache if no valid members
+                clear_redis_cache()
+                print("[REDIS_CLEANUP] Cleared cache - no valid members")
+            
+            return {
+                "success": True, 
+                "message": f"Removed {len(removed_member_ids)} deleted members",
+                "removed_count": len(removed_member_ids),
+                "remaining_count": len(new_encodings)
+            }
+        else:
+            return {"success": True, "message": "No members to remove"}
+            
+    except Exception as e:
+        print(f"[REDIS_CLEANUP] Error: {e}")
+        return {"success": False, "error": str(e)}
+
+def auto_cleanup_cache():
+    """Automatically clean up cache for removed members"""
+    if not REDIS_ENABLED:
+        return
+    
+    try:
+        result = cleanup_removed_members()
+        if result.get("success"):
+            print(f"[AUTO_CLEANUP] {result.get('message')}")
+        else:
+            print(f"[AUTO_CLEANUP] Error: {result.get('error')}")
+    except Exception as e:
+        print(f"[AUTO_CLEANUP] Error: {e}")

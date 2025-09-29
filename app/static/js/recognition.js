@@ -1,3 +1,6 @@
+
+
+
 // Dark mode functionality
 function toggleTheme() {
   const body = document.body;
@@ -172,6 +175,26 @@ document.addEventListener('DOMContentLoaded', function() {
   if (paramDoorId) {
     localStorage.setItem('doorId', paramDoorId);
     setDoorIdParam(paramDoorId);
+  } else {
+    // Clear any existing door ID from localStorage to ensure clean state
+    localStorage.removeItem('doorId');
+    console.log('[DOOR CHECK] Cleared existing door ID from localStorage');
+    
+    // Show warning if no door ID is provided and disable camera button
+    const status = document.getElementById('status');
+    const startButton = document.querySelector('button[onclick="startCamera()"]');
+    
+    if (status) {
+      status.textContent = '⚠️ Door ID belum diset. Tambahkan ?doorid=XXXX pada URL untuk memulai scan wajah';
+      status.className = 'status error';
+    }
+    
+    if (startButton) {
+      startButton.disabled = true;
+      startButton.textContent = '🚫 Start Camera (Door ID Required)';
+      startButton.style.opacity = '0.5';
+      startButton.style.cursor = 'not-allowed';
+    }
   }
 });
 
@@ -185,13 +208,130 @@ let isProcessing = false;
 let inFlight = false;
 let lastFaces = [];
 let lastFacesTime = 0;
-const FACES_TTL_MS = 1000; // Consistent with app_old.py
-const SMOOTHING_ALPHA = 0.2; // Consistent with app_old.py
+const FACES_TTL_MS = 1200; // Reduced to 1200ms since we have local tracking
+const SMOOTHING_ALPHA = 0.3; // Increased from 0.2 to 0.3 for smoother tracking
 const workCanvas = document.createElement('canvas');
 const workCtx = workCanvas.getContext('2d');
 
 // Simple popup control
 let currentPopupTimeout = null;
+
+// === Local face detection (browser) ===
+let faceDetector = null;
+const LOCAL_DET_INTERVAL = 100; // ~10 FPS - optimal untuk performa
+let localBoxes = [];           // bbox terbaru dari detektor lokal
+let renderFaces = [];          // bbox final yg akan digambar (hasil merge)
+const MIN_IOU_ASSOC = 0.2;     // ambang asosiasi nama
+
+// Linear smoothing (lembut & murah)
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function smoothBox(prev, curr, alpha = SMOOTHING_ALPHA) {
+  return {
+    x: Math.round(lerp(prev.x, curr.x, alpha)),
+    y: Math.round(lerp(prev.y, curr.y, alpha)),
+    width: Math.round(lerp(prev.width, curr.width, alpha)),
+    height: Math.round(lerp(prev.height, curr.height, alpha)),
+    name: curr.name ?? prev.name ?? 'Unknown',
+    confidence: curr.confidence ?? prev.confidence,
+    cooldown: curr.cooldown ?? prev.cooldown,
+    cooldown_remaining: curr.cooldown_remaining ?? prev.cooldown_remaining,
+  };
+}
+
+// Ambil nama dari hasil server yang paling "nempel" (IoU terbesar)
+function associateLabels(detBoxes, knownFaces) {
+  return detBoxes.map(db => {
+    let best = null, bestIou = 0;
+    for (const k of knownFaces) {
+      const iou = boxIoU(db, k);
+      if (iou > bestIou) { bestIou = iou; best = k; }
+    }
+    if (best && bestIou >= MIN_IOU_ASSOC) {
+      return { ...db, name: best.name, confidence: best.confidence, cooldown: best.cooldown, cooldown_remaining: best.cooldown_remaining };
+    }
+    return { ...db, name: 'Unknown' };
+  });
+}
+
+// Init FaceDetector jika tersedia
+function initLocalDetector() {
+  // Check if door ID is available in URL before initializing local detector
+  const params = new URLSearchParams(window.location.search);
+  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  
+  if (!urlDoorId || urlDoorId.trim() === '') {
+    console.log('[LOCAL] Skipping local detector initialization - no door ID in URL');
+    return;
+  }
+  
+  if ('FaceDetector' in window) {
+    try {
+      faceDetector = new FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
+      console.log('[LOCAL] FaceDetector ready');
+      localDetectLoop();
+    } catch (e) {
+      console.warn('[LOCAL] FaceDetector init failed:', e);
+    }
+  } else {
+    console.warn('[LOCAL] FaceDetector not supported in this browser');
+  }
+}
+
+function localDetectLoop() {
+  // Check if door ID is available in URL before proceeding with detection
+  const params = new URLSearchParams(window.location.search);
+  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  
+  if (!urlDoorId || urlDoorId.trim() === '') {
+    // No door ID in URL, stop local detection
+    console.log('[LOCAL] Stopping local detection - no door ID in URL');
+    return;
+  }
+  
+  if (!isProcessing || !faceDetector || !video || video.readyState < 2) {
+    setTimeout(localDetectLoop, LOCAL_DET_INTERVAL);
+    return;
+  }
+  faceDetector.detect(video)
+    .then(dets => {
+      // Convert DOMRectReadOnly -> plain box
+      const detBoxes = dets.map(d => ({
+        x: Math.round(d.boundingBox.x),
+        y: Math.round(d.boundingBox.y),
+        width: Math.round(d.boundingBox.width),
+        height: Math.round(d.boundingBox.height),
+      }));
+      // Gabungkan label dari lastFaces (hasil server terbaru)
+      const withLabels = associateLabels(detBoxes, lastFaces);
+      // Smooth vs posisi sebelumnya agar stabil
+      if (localBoxes.length) {
+        const used = new Array(withLabels.length).fill(false);
+        const smoothed = [];
+        for (const pb of localBoxes) {
+          // match terbaik buat smoothing
+          let bi = -1, biou = 0;
+          for (let i = 0; i < withLabels.length; i++) {
+            if (used[i]) continue;
+            const iou = boxIoU(pb, withLabels[i]);
+            if (iou > biou) { biou = iou; bi = i; }
+          }
+          if (bi >= 0 && biou >= 0.1) {
+            used[bi] = true;
+            smoothed.push(smoothBox(pb, withLabels[bi]));
+          }
+        }
+        // sisakan yg belum kepakai
+        for (let i = 0; i < withLabels.length; i++) if (!used[i]) smoothed.push(withLabels[i]);
+        localBoxes = smoothed;
+      } else {
+        localBoxes = withLabels;
+      }
+      lastFacesTime = Date.now(); // anggap "aktif" supaya tidak hilang di TTL
+    })
+    .catch(() => { /* noop */ })
+    .finally(() => setTimeout(localDetectLoop, LOCAL_DET_INTERVAL));
+}
 
 function updateStatus(message, type = 'info') {
   status.textContent = message;
@@ -199,11 +339,64 @@ function updateStatus(message, type = 'info') {
 }
 
 async function startCamera() {
-  // Ensure door ID is set for this device via URL param/localStorage
+  // Double check door ID is set - both from URL params and localStorage
+  const params = new URLSearchParams(window.location.search);
+  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
   const savedDoorId = localStorage.getItem('doorId');
-  if (!savedDoorId) {
-    updateStatus('Door ID belum diset. Tambahkan ?doorid=XXXX pada URL', 'error');
-    alert('Door ID belum diset. Tambahkan ?doorid=XXXX pada URL');
+  
+  console.log('[DOOR CHECK] URL Door ID:', urlDoorId);
+  console.log('[DOOR CHECK] Saved Door ID:', savedDoorId);
+  console.log('[DOOR CHECK] Current URL:', window.location.href);
+  
+  // HARUS ada door ID di URL - tidak boleh hanya dari localStorage
+  if (!urlDoorId || urlDoorId.trim() === '') {
+    updateStatus('⚠️ Door ID belum diset. Tambahkan ?doorid=XXXX pada URL untuk memulai scan wajah', 'error');
+    alert('⚠️ PERINGATAN: Door ID belum diset!\n\nTambahkan parameter ?doorid=XXXX pada URL untuk memulai scan wajah.\n\nContoh: http://localhost:5000?doorid=12345');
+    
+    // Disable the start camera button
+    const startButton = document.querySelector('button[onclick="startCamera()"]');
+    if (startButton) {
+      startButton.disabled = true;
+      startButton.textContent = '🚫 Start Camera (Door ID Required)';
+      startButton.style.opacity = '0.5';
+      startButton.style.cursor = 'not-allowed';
+    }
+    return;
+  }
+  
+  // If we have URL door ID but not saved, save it
+  if (urlDoorId && !savedDoorId) {
+    localStorage.setItem('doorId', urlDoorId);
+    setDoorIdParam(urlDoorId);
+  }
+  
+  // Re-enable start camera button if door ID is available
+  const startButton = document.querySelector('button[onclick="startCamera()"]');
+  if (startButton && startButton.disabled) {
+    startButton.disabled = false;
+    startButton.textContent = '📹 Start Camera';
+    startButton.style.opacity = '1';
+    startButton.style.cursor = 'pointer';
+  }
+  
+  // FINAL CHECK - HARUS ada door ID di URL, tidak boleh bypass
+  const currentUrlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  
+  console.log('[FINAL CHECK] Current URL Door ID:', currentUrlDoorId);
+  console.log('[FINAL CHECK] Full URL:', window.location.href);
+  
+  if (!currentUrlDoorId || currentUrlDoorId.trim() === '') {
+    console.log('[CAMERA] FINAL CHECK FAILED - no valid door ID in URL');
+    updateStatus('⚠️ Door ID belum diset. Tambahkan ?doorid=XXXX pada URL untuk memulai scan wajah', 'error');
+    
+    // Disable the start camera button
+    const startButton = document.querySelector('button[onclick="startCamera()"]');
+    if (startButton) {
+      startButton.disabled = true;
+      startButton.textContent = '🚫 Start Camera (Door ID Required)';
+      startButton.style.opacity = '0.5';
+      startButton.style.cursor = 'not-allowed';
+    }
     return;
   }
   
@@ -239,10 +432,14 @@ async function startCamera() {
         video.play().then(() => {
           console.log('[CAMERA] Video play started');
           startProcessing();
+          // Initialize local face detector after video is ready
+          initLocalDetector();
         }).catch(err => {
           console.error('[CAMERA] Video play failed:', err);
           // Still start processing even if play fails
           startProcessing();
+          // Initialize local face detector even if play fails
+          initLocalDetector();
         });
       }, 100); // Small delay to ensure video is ready
     };
@@ -273,11 +470,24 @@ function stopCamera() {
     stream.getTracks().forEach(track => track.stop());
     stream = null;
     video.srcObject = null;
+    // Stop local detection
+    faceDetector = null;
+    localBoxes = [];
+    lastFaces = [];
     updateStatus('Camera stopped', 'info');
   }
 }
 
 function startProcessing() {
+  // Check if door ID is available in URL before starting processing
+  const params = new URLSearchParams(window.location.search);
+  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  
+  if (!urlDoorId) {
+    console.log('[PROCESSING] Skipping processing start - no door ID in URL');
+    return;
+  }
+  
   if (isProcessing) return;
   isProcessing = true;
   requestAnimationFrame(drawDisplay);
@@ -285,7 +495,7 @@ function startProcessing() {
 }
 
 let lastProcessTime = 0;
-let PROCESS_INTERVAL = 30; // recognition cadence - optimized for stable bounding box
+let PROCESS_INTERVAL = 50; // Increased from 30ms to 50ms for better stability
 let performanceMetrics = {
   avgResponseTime: 0,
   requestCount: 0,
@@ -293,6 +503,19 @@ let performanceMetrics = {
 };
 
 function processFrame() {
+  // Check if door ID is available in URL before proceeding with server recognition
+  const params = new URLSearchParams(window.location.search);
+  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  
+  if (!urlDoorId || urlDoorId.trim() === '') {
+    // No door ID in URL, stop server recognition
+    console.log('[SERVER] Stopping server recognition - no door ID in URL');
+    if (isProcessing) {
+      setTimeout(processFrame, 200);
+    }
+    return;
+  }
+  
   if (!stream || !video.videoWidth) {
     if (isProcessing) {
       setTimeout(processFrame, 200);
@@ -345,18 +568,13 @@ function processFrame() {
       updatePerformanceMetrics(responseTime);
       
       if (data.success) {
-        // Always use OpenCV-processed frame for stable bounding boxes
-        if (data.processed_frame) {
-          displayProcessedFrame(data.processed_frame);
-          console.log('[OPENCV] Using OpenCV-processed frame for stable bounding boxes');
-        } else {
-          // If no OpenCV frame, show error message
-          console.warn('[OPENCV] No processed frame received, showing error');
-          ctx.fillStyle = '#ff0000';
-          ctx.font = '20px Arial';
-          ctx.textAlign = 'center';
-          ctx.fillText('No OpenCV frame received', canvas.width / 2, canvas.height / 2);
-        }
+        // Update faces data for continuous tracking (for names/cooldown info)
+        updateFaces(data.faces, scale);
+        
+        // Always use local video + overlay bounding boxes (ignore server processed_frame)
+        // This ensures continuous bounding box display without flickering
+        console.log('[LOCAL] Using local video with overlay bounding boxes for continuous tracking');
+        
         updateCooldownDisplay(data.cooldown);
         console.log('[DEBUG] Received popup data:', data.popup);
         showPopupNotification(data.popup);
@@ -415,6 +633,9 @@ function displayProcessedFrame(frameBase64) {
     
     console.log('[OPENCV] Displayed processed frame with OpenCV bounding boxes');
   };
+  img.onerror = function() {
+    console.error('[OPENCV] Failed to load processed frame image');
+  };
   img.src = 'data:image/jpeg;base64,' + frameBase64;
 }
 
@@ -430,10 +651,10 @@ function updateFaces(newFaces, scale) {
     cooldown_remaining: f.cooldown_remaining
   }));
   
-  // Always update faces, even if empty array (to clear old faces)
+  // Always update faces for continuous tracking
   if (upscaled.length === 0) {
-    // If no faces detected, keep last faces for a bit longer
-    if (Date.now() - lastFacesTime > 1000) { // Only clear after 1 second of no faces
+    // If no faces detected, keep last faces for a bit longer for smooth tracking
+    if (Date.now() - lastFacesTime > 2000) { // Keep faces visible for 2 seconds
       lastFaces = [];
     }
   } else {
@@ -444,6 +665,8 @@ function updateFaces(newFaces, scale) {
     }
     lastFacesTime = Date.now();
   }
+  
+  console.log(`[FACES] Updated ${upscaled.length} server faces, showing ${lastFaces.length} server faces, ${localBoxes.length} local faces`);
 }
 
 function updateCooldownDisplay(cooldownInfo) {
@@ -540,11 +763,11 @@ function updatePerformanceMetrics(responseTime) {
   if (performanceMetrics.requestCount > 10) {  // After 10 requests, start adjusting
     const slowRequestRatio = performanceMetrics.slowRequests / performanceMetrics.requestCount;
     
-    if (slowRequestRatio > 0.4) {  // If more than 40% are slow (increased threshold)
-      PROCESS_INTERVAL = Math.min(PROCESS_INTERVAL + 5, 60);  // Increase interval more conservatively
+    if (slowRequestRatio > 0.3) {  // If more than 30% are slow
+      PROCESS_INTERVAL = Math.min(PROCESS_INTERVAL + 10, 100);  // Increase interval more conservatively
       console.log(`[PERF] Performance degraded, increasing interval to ${PROCESS_INTERVAL}ms`);
-    } else if (slowRequestRatio < 0.05 && performanceMetrics.avgResponseTime < 300) {  // If less than 5% slow and avg < 300ms
-      PROCESS_INTERVAL = Math.max(PROCESS_INTERVAL - 2, 20);  // Decrease interval more conservatively
+    } else if (slowRequestRatio < 0.1 && performanceMetrics.avgResponseTime < 500) {  // If less than 10% slow and avg < 500ms
+      PROCESS_INTERVAL = Math.max(PROCESS_INTERVAL - 5, 30);  // Decrease interval more conservatively
       console.log(`[PERF] Performance good, decreasing interval to ${PROCESS_INTERVAL}ms`);
     }
   }
@@ -653,6 +876,16 @@ function resizeCanvas() {
 
 function drawDisplay() {
   if (!isProcessing) return;
+  
+  // Check if door ID is available in URL before displaying faces
+  const params = new URLSearchParams(window.location.search);
+  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  
+  if (!urlDoorId) {
+    // No door ID in URL, don't display faces
+    requestAnimationFrame(drawDisplay);
+    return;
+  }
   
   // Check if video is ready and has dimensions
   if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
@@ -766,47 +999,44 @@ function drawDisplay() {
     ctx.fillText('Video drawing error: ' + e.message, canvas.width / 2, canvas.height / 2);
   }
   
-  const now = Date.now();
-  const showFaces = (now - lastFacesTime) < FACES_TTL_MS ? lastFaces : [];
+  // Pilih sumber bbox untuk dirender:
+  // 1) pakai localBoxes jika ada (tracking kontinu), kalau kosong fallback ke lastFaces dengan TTL
+  if (localBoxes.length) {
+    renderFaces = localBoxes;
+  } else {
+    const now = Date.now();
+    renderFaces = (now - lastFacesTime) < FACES_TTL_MS ? lastFaces : [];
+  }
   
   // Calculate scaling factors based on actual video dimensions
   const sx = video.videoWidth ? canvas.width / video.videoWidth : 1;
   const sy = video.videoHeight ? canvas.height / video.videoHeight : 1;
   
-  /* Nonaktifkan blok ini untuk menghilangkan flickering
-  for (const face of showFaces) {
-    const { x, y, width, height, name, confidence, cooldown, cooldown_remaining } = face;
-    // Adjust coordinates for horizontal flip
+  // Draw bounding boxes for continuous face tracking
+  for (const face of renderFaces) {
+    const { x, y, width, height, name, confidence, cooldown } = face;
+    
+    // Karena video kamu di-flip horizontal saat digambar,
+    // koordinat FaceDetector (tanpa flip) perlu dikonversi sama seperti yang sudah kamu lakukan:
     const dx = Math.round((video.videoWidth - x - width) * sx);
     const dy = Math.round(y * sy);
     const dw = Math.round(width * sx);
     const dh = Math.round(height * sy);
     
-    // Different colors for different states
-    let color = '#ff0000'; // Default red for unknown
-    if (cooldown) {
-      color = '#ffa500'; // Orange for cooldown
-    } else if (name !== 'Unknown') {
-      color = '#00ff00'; // Green for recognized
-    }
+    let color = '#ff0000';
+    if (cooldown) color = '#ffa500';
+    else if (name !== 'Unknown') color = '#00ff00';
     
     ctx.strokeStyle = color;
-    ctx.lineWidth = 3; // Increased from 2 to 3 for better visibility
+    ctx.lineWidth = 3;
     ctx.strokeRect(dx, dy, dw, dh);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'; // Increased opacity from 0.7 to 0.8
-    ctx.fillRect(dx, dy + dh - 25, dw, 25);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '14px Arial';
     
-    // Display different text based on state
-    if (cooldown) {
-      // Don't show cooldown in bounding box, it will be shown on screen
-      ctx.fillText(`${name}`, dx + 5, dy + dh - 8);
-    } else {
-      ctx.fillText(`${name}`, dx + 5, dy + dh - 8);
-    }
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(dx, dy + dh - 25, dw, 25);
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px Arial';
+    ctx.fillText(`${name}`, dx + 5, dy + dh - 8);
   }
-  */
   
   requestAnimationFrame(drawDisplay);
 }

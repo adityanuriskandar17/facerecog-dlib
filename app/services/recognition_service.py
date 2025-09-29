@@ -96,7 +96,7 @@ class Recognizer:
             return {}
     
     def check_for_new_members(self):
-        """Check for new members that don't have encodings yet"""
+        """Check for new members that don't have encodings yet and cleanup removed members"""
         current_time = time.time()
         if current_time - self.last_auto_check < self.auto_check_interval:
             return
@@ -106,24 +106,127 @@ class Recognizer:
         try:
             print(f"[AUTO-CHECK] Checking for new members... (loaded: {len(self.loaded_member_ids)})")
             
-            # Get all active members with images
-            sources = fetch_member_images()
-            current_member_ids = {member_id for member_id, _, _, _, _ in sources}
+            # First, cleanup removed members from cache
+            if REDIS_ENABLED:
+                from .redis_service import auto_cleanup_cache
+                auto_cleanup_cache()
             
-            print(f"[AUTO-CHECK] Current DB members: {len(current_member_ids)}")
+            # Get all active members with enc data from database
+            current_member_ids = self._get_active_members_with_enc()
+            
+            print(f"[AUTO-CHECK] Current DB members with enc: {len(current_member_ids)}")
             print(f"[AUTO-CHECK] Loaded members: {len(self.loaded_member_ids)}")
             
             # Find new members
             new_member_ids = current_member_ids - self.loaded_member_ids
             
             if new_member_ids:
-                print(f"[AUTO-CHECK] Found {len(new_member_ids)} new members: {new_member_ids}")
-                self.process_new_members(new_member_ids, sources)
+                print(f"[AUTO-CHECK] Found {len(new_member_ids)} new members with enc data: {new_member_ids}")
+                self.process_new_members_with_enc(new_member_ids)
             else:
                 print(f"[AUTO-CHECK] No new members found")
                 
         except Exception as e:
             print(f"[AUTO-CHECK] Error checking for new members: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _get_active_members_with_enc(self):
+        """Get all active members that have enc data"""
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            
+            # Get all members with enc data
+            cur.execute("""
+                SELECT m.id 
+                FROM member m
+                WHERE m.enc IS NOT NULL 
+                AND LENGTH(m.enc) = 1024
+                AND m.status = 1
+            """)
+            
+            member_ids = {row[0] for row in cur.fetchall()}
+            cur.close()
+            conn.close()
+            
+            return member_ids
+            
+        except Exception as e:
+            print(f"[AUTO-CHECK] Error getting active members: {e}")
+            return set()
+    
+    def process_new_members_with_enc(self, new_member_ids: set):
+        """Process new members that have enc data"""
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            
+            # Get member data for new members
+            placeholders = ','.join(['%s'] * len(new_member_ids))
+            cur.execute(f"""
+                SELECT m.id, m.member_id, m.first_name, m.last_name, m.enc
+                FROM member m
+                WHERE m.id IN ({placeholders})
+                AND m.enc IS NOT NULL 
+                AND LENGTH(m.enc) = 1024
+            """, list(new_member_ids))
+            
+            results = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            if not results:
+                print("[AUTO-CHECK] No member data found for new members")
+                return
+            
+            # Process each new member
+            new_encodings = []
+            new_names = []
+            new_member_ids_list = []
+            new_gym_member_id_mapping = {}
+            
+            for db_member_id, gym_member_id, first_name, last_name, enc_data in results:
+                try:
+                    # Convert binary data back to numpy array
+                    encoding = np.frombuffer(enc_data, dtype=np.float64)
+                    
+                    # Create full name
+                    full_name = f"{first_name} {last_name}".strip()
+                    if not full_name:
+                        full_name = f"Member_{db_member_id}"
+                    
+                    new_encodings.append(encoding)
+                    new_names.append(full_name)
+                    new_member_ids_list.append(db_member_id)
+                    new_gym_member_id_mapping[db_member_id] = gym_member_id
+                    
+                    print(f"[AUTO-CHECK] Loaded existing encoding for member_id={db_member_id} ({full_name})")
+                    
+                except Exception as e:
+                    print(f"[AUTO-CHECK] Error processing member_id={db_member_id}: {e}")
+                    continue
+            
+            # Add new encodings to existing ones
+            if new_encodings:
+                with self.lock:
+                    self.known_encodings.extend(new_encodings)
+                    self.known_names.extend(new_names)
+                    self.known_ids.extend(new_member_ids_list)
+                    self.gym_member_id_mapping.update(new_gym_member_id_mapping)
+                    self.loaded_member_ids.update(new_member_ids)
+                
+                # Update Redis cache
+                if REDIS_ENABLED:
+                    from .redis_service import cache_encodings
+                    cache_encodings(self.known_encodings, self.known_names, self.known_ids)
+                
+                print(f"[AUTO-CHECK] Successfully added {len(new_encodings)} new encodings from database")
+            else:
+                print("[AUTO-CHECK] No new encodings added")
+                
+        except Exception as e:
+            print(f"[AUTO-CHECK] Error processing new members: {e}")
             import traceback
             traceback.print_exc()
     

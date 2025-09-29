@@ -158,3 +158,18 @@ def redis_reload_route():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@admin_bp.route("/redis_cleanup")
+def redis_cleanup_route():
+    """Clean up removed members from Redis cache"""
+    if not require_login():
+        return redirect(url_for("auth.login"))
+    
+    # Import here to avoid circular imports
+    from ..services.redis_service import cleanup_removed_members
+    
+    try:
+        result = cleanup_removed_members()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

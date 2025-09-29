@@ -223,15 +223,17 @@ document.addEventListener('DOMContentLoaded', function() {
             if (tempStream) tempStream.getTracks().forEach(t => t.stop());
         }
 
-        // Send to burst endpoint with email from server (fallback to hardcoded if empty)
+        // Send to burst endpoint - email will be auto-detected from session
         const email = (window.CURRENT_EMAIL || '').trim()
+        console.log('Sending burst request with email:', email || 'auto-detect from session');
+        
         try {
             if (burstProgress) burstProgress.textContent = 'Menghitung encoding...';
             const res = await fetch('/compare-photo-burst', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'same-origin',
-                body: JSON.stringify({ images, email })
+                body: JSON.stringify({ images, email: email || null })
             });
             const contentType = res.headers.get('content-type') || '';
             let json;

@@ -433,6 +433,16 @@ def compare_photo_burst():
         data = request.get_json(force=True)
         images = data.get("images") or []
         target_email = (data.get("email") or '').strip().lower()
+        
+        # If no email provided, try to get from session login
+        if not target_email:
+            token = session.get("gm_token", "")
+            if token:
+                prof = fetch_member_profile(token)
+                if not prof.get("error") and prof.get("result"):
+                    target_email = prof["result"].get("email", "").strip().lower()
+                    print(f"[COMPARE_BURST] Using email from session: {target_email}")
+        
         if not images or not isinstance(images, list):
             return {"success": False, "error": "images[] is required"}, 400
 
@@ -507,24 +517,41 @@ def compare_photo_burst():
         saved = False
         member_db_id = None
         save_reason = None
+        
+        print(f"[COMPARE_BURST] Target email: '{target_email}'")
+        print(f"[COMPARE_BURST] Email provided: {bool(target_email)}")
+        
         if target_email:
             try:
                 from ..services.database_service import get_conn, save_encoding_to_db
                 conn = get_conn()
                 cur = conn.cursor()
-                cur.execute("SELECT id FROM member WHERE email = %s LIMIT 1", (target_email,))
+                
+                print(f"[COMPARE_BURST] Searching for email: {target_email}")
+                cur.execute("SELECT id, email, first_name, last_name FROM member WHERE email = %s LIMIT 1", (target_email,))
                 row = cur.fetchone()
+                
                 if row:
                     member_db_id = int(row[0])
+                    print(f"[COMPARE_BURST] Email found! Member ID: {member_db_id}, Name: {row[2]} {row[3]}")
+                    
+                    # Save encoding
+                    print(f"[COMPARE_BURST] Saving encoding for member_id={member_db_id}")
                     save_encoding_to_db(member_db_id, enc_avg.astype(np.float64))
                     saved = True
+                    print(f"[COMPARE_BURST] ✅ Encoding saved successfully!")
                 else:
                     save_reason = "email_not_found"
+                    print(f"[COMPARE_BURST] ❌ Email not found in database")
+                
                 cur.close()
                 conn.close()
             except Exception as e:
-                print(f"[COMPARE_BURST] Save error: {e}")
+                print(f"[COMPARE_BURST] ❌ Save error: {e}")
                 save_reason = str(e)
+        else:
+            save_reason = "no_email_provided"
+            print(f"[COMPARE_BURST] ❌ No email provided")
 
         return {
             "success": True,
@@ -540,6 +567,103 @@ def compare_photo_burst():
         }
     except Exception as e:
         print(f"[COMPARE_BURST] Error: {e}")
+        return {"success": False, "error": str(e)}, 500
+
+@recognition_bp.route("/debug-burst-save", methods=["POST"])
+def debug_burst_save():
+    """Debug endpoint to test burst save functionality"""
+    try:
+        if not require_login():
+            return {"success": False, "error": "Unauthorized"}, 401
+
+        data = request.get_json(force=True)
+        target_email = (data.get("email") or '').strip().lower()
+        test_member_id = data.get("member_id")
+        
+        debug_info = {
+            "target_email": target_email,
+            "email_provided": bool(target_email),
+            "test_member_id": test_member_id
+        }
+        
+        # Test email lookup
+        if target_email:
+            try:
+                from ..services.database_service import get_conn
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT id, email, first_name, last_name FROM member WHERE email = %s LIMIT 1", (target_email,))
+                row = cur.fetchone()
+                cur.close()
+                conn.close()
+                
+                if row:
+                    debug_info.update({
+                        "email_found": True,
+                        "member_id": row[0],
+                        "member_email": row[1],
+                        "member_name": f"{row[2]} {row[3]}"
+                    })
+                else:
+                    debug_info.update({
+                        "email_found": False,
+                        "error": "Email not found in database"
+                    })
+            except Exception as e:
+                debug_info.update({
+                    "email_found": False,
+                    "error": str(e)
+                })
+        
+        # Test save functionality
+        if debug_info.get("email_found") or test_member_id:
+            try:
+                from ..services.database_service import get_conn, save_encoding_to_db
+                import numpy as np
+                
+                # Create dummy encoding for testing
+                dummy_encoding = np.random.rand(128).astype(np.float64)
+                member_id = debug_info.get("member_id") or test_member_id
+                
+                save_encoding_to_db(int(member_id), dummy_encoding)
+                debug_info.update({
+                    "save_test": True,
+                    "save_success": True,
+                    "test_encoding_saved": True
+                })
+                
+                # Verify save
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT LENGTH(enc) FROM member WHERE id = %s", (member_id,))
+                result = cur.fetchone()
+                cur.close()
+                conn.close()
+                
+                if result and result[0] == 1024:
+                    debug_info.update({
+                        "verification": True,
+                        "enc_length": result[0]
+                    })
+                else:
+                    debug_info.update({
+                        "verification": False,
+                        "enc_length": result[0] if result else None
+                    })
+                    
+            except Exception as e:
+                debug_info.update({
+                    "save_test": True,
+                    "save_success": False,
+                    "save_error": str(e)
+                })
+        
+        return {
+            "success": True,
+            "debug_info": debug_info
+        }
+        
+    except Exception as e:
         return {"success": False, "error": str(e)}, 500
 
 @recognition_bp.route("/test_member_ids")
