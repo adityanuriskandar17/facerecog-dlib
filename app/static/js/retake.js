@@ -191,8 +191,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
 
                 // Detect different person (low similarity)
-                if (pct < 30) {
-                    alert('⚠️ ORANG BERBEDA DETECTED!\n\nKemiripan: ' + pct + '%\nIni adalah orang yang berbeda dengan foto saat ini.\n\nSilakan ambil foto ulang dengan orang yang sama.');
+                if (pct < 40) {
+                    Swal.fire({
+                        title: 'Orang Berbeda',
+                        text: 'Kemiripan: ' + pct + '% - Ini adalah orang yang berbeda',
+                        icon: 'warning',
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#d33'
+                    });
                     
                     // Reset the interface
                     if (resultBar) {
@@ -395,8 +401,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
                 
                 // Detect different person (low similarity) for burst
-                if (pct < 30) {
-                    alert('⚠️ ORANG BERBEDA DETECTED!\n\nKemiripan: ' + pct + '%\nIni adalah orang yang berbeda dengan foto saat ini.\n\nSilakan ambil foto ulang dengan orang yang sama.');
+                if (pct < 40) {
+                    Swal.fire({
+                        title: 'Orang Berbeda',
+                        text: 'Kemiripan: ' + pct + '% - Ini adalah orang yang berbeda',
+                        icon: 'warning',
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#d33'
+                    });
                     
                     // Reset the interface
                     if (resultBar) {
