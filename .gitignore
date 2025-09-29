@@ -214,7 +214,6 @@ faces/
 *.gif
 *.bmp
 *.tiff
-*.webp
 
 # Camera/Video capture
 capture/

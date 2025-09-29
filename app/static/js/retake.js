@@ -21,6 +21,16 @@ document.addEventListener('DOMContentLoaded', function() {
     const uploadGymBtn = document.getElementById('uploadGymBtn');
     const uploadHorizonBtn = document.getElementById('uploadHorizonBtn');
     
+    // Marker and progress elements
+    const markerOverlay = document.getElementById('markerOverlay');
+    const burstProgressOverlay = document.getElementById('burstProgressOverlay');
+    const burstProgressText = document.getElementById('burstProgressText');
+    const burstProgressFill = document.getElementById('burstProgressFill');
+    
+    // Debug: Check if elements exist
+    console.log('Marker overlay element:', markerOverlay);
+    console.log('Progress overlay element:', burstProgressOverlay);
+    
     let currentStream = null;
 
     // Helper function to parse response JSON safely
@@ -52,6 +62,12 @@ document.addEventListener('DOMContentLoaded', function() {
             video.style.transform = 'scaleX(-1)';
             cameraContainer.style.display = 'block';
             preview.style.display = 'none';
+            
+            // Show marker overlay when camera opens
+            if (markerOverlay) {
+                markerOverlay.style.display = 'block';
+                console.log('Marker overlay shown for regular camera');
+            }
             
             // Show/hide buttons
             startCameraBtn.style.display = 'none';
@@ -251,6 +267,12 @@ document.addEventListener('DOMContentLoaded', function() {
         cameraContainer.style.display = 'none';
         preview.style.display = 'none';
         
+        // Hide marker overlay when camera closes
+        if (markerOverlay) {
+            markerOverlay.style.display = 'none';
+            console.log('Marker overlay hidden when camera closes');
+        }
+        
         // Show/hide buttons
         startCameraBtn.style.display = 'inline-block';
         captureBtn.style.display = 'none';
@@ -311,6 +333,12 @@ document.addEventListener('DOMContentLoaded', function() {
             cameraContainer.style.display = 'block';
             preview.style.display = 'none';
             
+            // Show marker overlay immediately when camera opens
+            if (markerOverlay) {
+                markerOverlay.style.display = 'block';
+                console.log('Marker overlay shown when camera opens');
+            }
+            
             // Show/hide buttons
             startCameraBtn.style.display = 'none';
             captureBtn.style.display = 'none';
@@ -341,6 +369,16 @@ document.addEventListener('DOMContentLoaded', function() {
     // Burst start handler (actual burst capture)
     if (burstStartBtn) {
         burstStartBtn.addEventListener('click', async () => {
+            // Show marker overlay and progress
+            if (markerOverlay) {
+                markerOverlay.style.display = 'block';
+                console.log('Marker overlay shown');
+            }
+            if (burstProgressOverlay) {
+                burstProgressOverlay.style.display = 'block';
+                console.log('Progress overlay shown');
+            }
+            
             // Prepare UI
             if (loader) loader.style.display = 'block';
             if (burstProgress) burstProgress.textContent = 'Mengambil sampel wajah... 0%';
@@ -365,13 +403,25 @@ document.addEventListener('DOMContentLoaded', function() {
                 const dataURL = bCanvas.toDataURL('image/jpeg', 0.8);
                 images.push(dataURL);
                 
+                // Update progress
+                const progress = Math.round((i + 1) / 20 * 100);
                 if (burstProgress) {
-                    burstProgress.textContent = `Mengambil sampel wajah... ${Math.round((i + 1) / 20 * 100)}%`;
+                    burstProgress.textContent = `Mengambil sampel wajah... ${progress}%`;
+                }
+                if (burstProgressText) {
+                    burstProgressText.textContent = `Mengambil sampel wajah... ${i + 1}/20`;
+                }
+                if (burstProgressFill) {
+                    burstProgressFill.style.width = `${progress}%`;
                 }
                 
                 // Wait between captures
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
+            
+            // Hide marker and progress overlay
+            if (markerOverlay) markerOverlay.style.display = 'none';
+            if (burstProgressOverlay) burstProgressOverlay.style.display = 'none';
             
             // Hide burst start button
             if (burstStartBtn) burstStartBtn.style.display = 'none';

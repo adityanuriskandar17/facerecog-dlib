@@ -185,6 +185,52 @@ body {
     border-radius: 8px;
 }
 
+/* Marker responsive styles */
+#markerImage {
+    width: 70% !important;
+    height: auto !important;
+    max-width: 400px !important;
+    min-width: 280px !important;
+    opacity: 0.8;
+    transition: all 0.3s ease;
+    display: block;
+    margin: 0 auto;
+    -webkit-transition: all 0.3s ease;
+    -moz-transition: all 0.3s ease;
+    -ms-transition: all 0.3s ease;
+    -o-transition: all 0.3s ease;
+}
+
+/* Marker overlay positioning */
+#markerOverlay {
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    z-index: 10 !important;
+    pointer-events: none !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+/* Responsive marker for different screen sizes */
+@media (max-width: 768px) {
+    #markerImage {
+        width: 65% !important;
+        max-width: 350px !important;
+        min-width: 220px !important;
+    }
+}
+
+@media (max-width: 480px) {
+    #markerImage {
+        width: 60% !important;
+        max-width: 300px !important;
+        min-width: 180px !important;
+    }
+}
+
 @media (max-width: 768px) {
     body {
         padding: 15px;
