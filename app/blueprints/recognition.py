@@ -564,3 +564,66 @@ def test_member_ids():
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@recognition_bp.route("/test_gym_config")
+def test_gym_config():
+    """Test endpoint to verify gym API configuration"""
+    try:
+        from ..config import GYM_API_KEY, GYM_LOGIN_URL, GYM_GATE_URL, CHECKIN_ENABLED
+        
+        return {
+            "success": True,
+            "config": {
+                "GYM_API_KEY": "***" if GYM_API_KEY else "NOT SET",
+                "GYM_LOGIN_URL": GYM_LOGIN_URL or "NOT SET",
+                "GYM_GATE_URL": GYM_GATE_URL or "NOT SET",
+                "CHECKIN_ENABLED": CHECKIN_ENABLED
+            },
+            "message": "Check if all required gym API configuration is set"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@recognition_bp.route("/test_gym_api")
+def test_gym_api():
+    """Test gym API with a sample member ID"""
+    try:
+        from ..services.gym_service import gym_login, gym_open_gate_with_door
+        from ..config import GYM_API_KEY, GYM_LOGIN_URL, GYM_GATE_URL
+        
+        if not GYM_API_KEY or not GYM_LOGIN_URL or not GYM_GATE_URL:
+            return {
+                "success": False,
+                "error": "Gym API configuration incomplete",
+                "config": {
+                    "GYM_API_KEY": "SET" if GYM_API_KEY else "NOT SET",
+                    "GYM_LOGIN_URL": GYM_LOGIN_URL or "NOT SET",
+                    "GYM_GATE_URL": GYM_GATE_URL or "NOT SET"
+                }
+            }
+        
+        # Test with a sample member ID (you can change this to a real member ID)
+        test_member_id = 1004686  # This should be a real member.member_id from your database
+        
+        # Test login
+        login_result = gym_login(test_member_id)
+        
+        if login_result["success"]:
+            # Test gate opening
+            gate_result = gym_open_gate_with_door(login_result["token"], "19456", correct_member_id=test_member_id)
+            
+            return {
+                "success": True,
+                "login_result": login_result,
+                "gate_result": gate_result,
+                "message": f"Tested with member_id: {test_member_id}"
+            }
+        else:
+            return {
+                "success": False,
+                "login_result": login_result,
+                "message": f"Login failed for member_id: {test_member_id}"
+            }
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)}

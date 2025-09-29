@@ -371,9 +371,7 @@ INDEX_HTML = """
         <h1>Face Recognition FTL GYM</h1>
         <p style="color: var(--text-secondary); margin: 0;">Powered by Horizon</p>
       </div>
-      <button class="btn btn-success" onclick="window.location.href='/login'">
-        <span>🔐</span> Retake
-      </button>
+      <button class="btn btn-success" onclick="window.location.href='/login'">Retake</button>
     </div>
     
     <div class="controls">
@@ -480,8 +478,8 @@ INDEX_HTML = """
     let inFlight = false;
     let lastFaces = [];
     let lastFacesTime = 0;
-    const FACES_TTL_MS = 1200;
-    const SMOOTHING_ALPHA = 0.5;
+    const FACES_TTL_MS = 1000;
+    const SMOOTHING_ALPHA = 0.2;
     const workCanvas = document.createElement('canvas');
     const workCtx = workCanvas.getContext('2d');
     

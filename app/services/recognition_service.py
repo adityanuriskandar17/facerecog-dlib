@@ -1,5 +1,6 @@
 import time
 import threading
+import base64
 import numpy as np
 import cv2
 from typing import List, Dict, Tuple
@@ -15,7 +16,7 @@ from .face_recognition_service import (
 )
 
 # Constants
-REQUIRED_CONSISTENT_FRAMES = 3
+REQUIRED_CONSISTENT_FRAMES = 2
 
 class Recognizer:
     def __init__(self):
@@ -569,14 +570,39 @@ def process_recognition(request, device_id):
                 # Check if we have enough consistent frames
                 current_streak = recognizer.device_prediction_streak.get(device_id, {"name": "", "count": 0})
                 if current_streak["count"] >= REQUIRED_CONSISTENT_FRAMES:
-                    # Show access granted popup
-                    popup_info = {
-                        "show": True,
-                        "style": "GRANTED",
-                        "member_name": best_face["name"],
-                        "member_id": best_face["member_id"],
-                        "message": "Welcome to FTL Gym!"
-                    }
+                    # Process gym gate opening
+                    from .gym_service import process_member_detection_with_door
+                    from ..config import CHECKIN_ENABLED
+                    
+                    popup_info = None
+                    if CHECKIN_ENABLED:
+                        # Use gym member ID directly for API call (best_face["member_id"] is the gym member ID)
+                        gym_member_id = best_face["member_id"]  # This is member.member_id (gym member ID like 1004686)
+                        if gym_member_id:
+                            # Get door ID from request or use default
+                            door_id = request.args.get('doorid', '19456')
+                            
+                            print(f"[GYM] Processing gate opening for {best_face['name']} (gym_member_id: {gym_member_id})")
+                            gym_result = process_member_detection_with_door(gym_member_id, best_face["name"], door_id, db_member_id=gym_member_id)
+                            
+                            if gym_result["success"]:
+                                print(f"[GYM] ✅ {gym_result['message']}")
+                                popup_info = gym_result.get("popup")
+                            else:
+                                print(f"[GYM] ❌ {gym_result['error']}")
+                                popup_info = gym_result.get("popup")
+                        else:
+                            print(f"[GYM] ❌ No gym_member_id found for member_id={best_face['member_id']}")
+                    
+                    # Fallback popup if no gym result
+                    if not popup_info:
+                        popup_info = {
+                            "show": True,
+                            "style": "GRANTED",
+                            "member_name": best_face["name"],
+                            "member_id": best_face["member_id"],
+                            "message": "Welcome to FTL Gym!"
+                        }
                     
                     # Update cooldown
                     recognizer.device_cooldowns[device_id] = {
@@ -591,12 +617,46 @@ def process_recognition(request, device_id):
         # Force garbage collection
         force_garbage_collection()
         
+        # Use OpenCV to draw bounding boxes directly on frame with smoothing
+        processed_frame = frame_bgr.copy()
+        
+        # Draw bounding boxes using OpenCV with improved stability
+        for face in faces:
+            x, y, width, height = face["x"], face["y"], face["width"], face["height"]
+            name = face["name"]
+            confidence = face["confidence"]
+            
+            # Different colors for different states (BGR format for OpenCV)
+            if face.get("cooldown", False):
+                color = (0, 165, 255)  # Orange for cooldown
+            elif name != "Unknown":
+                color = (0, 255, 0)    # Green for recognized
+            else:
+                color = (0, 0, 255)    # Red for unknown
+            
+            # Draw bounding box rectangle with VERY thick line for maximum visibility
+            cv2.rectangle(processed_frame, (x, y), (x + width, y + height), color, 5)
+            
+            # Draw label background with padding
+            label_height = 30
+            cv2.rectangle(processed_frame, (x, y + height - label_height), (x + width, y + height), (0, 0, 0), -1)
+            
+            # Draw label text with better positioning and larger font
+            label = f"{name} ({confidence:.2f})" if name != "Unknown" else f"Unknown ({confidence:.2f})"
+            cv2.putText(processed_frame, label, (x + 5, y + height - 8),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 3, lineType=cv2.LINE_AA)
+        
+        # Encode processed frame as JPEG
+        _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        frame_base64 = base64.b64encode(buffer).decode('utf-8')
+        
         return {
             "success": True, 
             "faces": faces, 
             "popup": popup_info,
             "cooldown": None,
-            "debug": f"Processed {len(known_encs)} encodings"
+            "processed_frame": frame_base64,  # Send OpenCV-processed frame
+            "debug": f"Processed {len(known_encs)} encodings with OpenCV bounding boxes"
         }
         
     except Exception as e:

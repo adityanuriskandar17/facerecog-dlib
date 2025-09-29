@@ -185,8 +185,8 @@ let isProcessing = false;
 let inFlight = false;
 let lastFaces = [];
 let lastFacesTime = 0;
-const FACES_TTL_MS = 1200;
-const SMOOTHING_ALPHA = 0.5;
+const FACES_TTL_MS = 1000; // Consistent with app_old.py
+const SMOOTHING_ALPHA = 0.2; // Consistent with app_old.py
 const workCanvas = document.createElement('canvas');
 const workCtx = workCanvas.getContext('2d');
 
@@ -285,7 +285,7 @@ function startProcessing() {
 }
 
 let lastProcessTime = 0;
-let PROCESS_INTERVAL = 60; // recognition cadence - will be adjusted dynamically
+let PROCESS_INTERVAL = 30; // recognition cadence - optimized for stable bounding box
 let performanceMetrics = {
   avgResponseTime: 0,
   requestCount: 0,
@@ -303,7 +303,7 @@ function processFrame() {
   const now = Date.now();
   if (now - lastProcessTime < PROCESS_INTERVAL) {
     if (isProcessing) {
-      setTimeout(processFrame, 100);
+      setTimeout(processFrame, 20); // Optimized for stable bounding box tracking
     }
     return;
   }
@@ -318,7 +318,7 @@ function processFrame() {
   workCtx.drawImage(video, 0, 0, targetW, targetH);
 
   if (inFlight) {
-    if (isProcessing) setTimeout(processFrame, 50);
+    if (isProcessing) setTimeout(processFrame, 30); // Optimized for stable bounding box tracking
     return;
   }
   inFlight = true;
@@ -345,7 +345,18 @@ function processFrame() {
       updatePerformanceMetrics(responseTime);
       
       if (data.success) {
-        updateFaces(data.faces, scale);
+        // Always use OpenCV-processed frame for stable bounding boxes
+        if (data.processed_frame) {
+          displayProcessedFrame(data.processed_frame);
+          console.log('[OPENCV] Using OpenCV-processed frame for stable bounding boxes');
+        } else {
+          // If no OpenCV frame, show error message
+          console.warn('[OPENCV] No processed frame received, showing error');
+          ctx.fillStyle = '#ff0000';
+          ctx.font = '20px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('No OpenCV frame received', canvas.width / 2, canvas.height / 2);
+        }
         updateCooldownDisplay(data.cooldown);
         console.log('[DEBUG] Received popup data:', data.popup);
         showPopupNotification(data.popup);
@@ -360,8 +371,51 @@ function processFrame() {
   }, 'image/jpeg', 0.4);  // Reduced quality from 0.6 to 0.4 for faster upload
 
   if (isProcessing) {
-    setTimeout(processFrame, 200);
+    setTimeout(processFrame, 100); // Optimized for stable bounding box tracking
   }
+}
+
+function displayProcessedFrame(frameBase64) {
+  // Display OpenCV-processed frame with bounding boxes already drawn
+  const img = new Image();
+  img.onload = function() {
+    // Clear canvas and draw the processed frame
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Fill background
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Calculate scaling to fit canvas (maintain aspect ratio)
+    const imgAspect = img.width / img.height;
+    const canvasAspect = canvas.width / canvas.height;
+    
+    let drawWidth, drawHeight, drawX, drawY;
+    
+    if (imgAspect > canvasAspect) {
+      // Image is wider, fit to width
+      drawWidth = canvas.width;
+      drawHeight = canvas.width / imgAspect;
+      drawX = 0;
+      drawY = (canvas.height - drawHeight) / 2;
+    } else {
+      // Image is taller, fit to height
+      drawHeight = canvas.height;
+      drawWidth = canvas.height * imgAspect;
+      drawX = (canvas.width - drawWidth) / 2;
+      drawY = 0;
+    }
+    
+    // Draw the processed frame with horizontal flip (like original video)
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.translate(-canvas.width, 0);
+    ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+    ctx.restore();
+    
+    console.log('[OPENCV] Displayed processed frame with OpenCV bounding boxes');
+  };
+  img.src = 'data:image/jpeg;base64,' + frameBase64;
 }
 
 function updateFaces(newFaces, scale) {
@@ -371,14 +425,25 @@ function updateFaces(newFaces, scale) {
     width: Math.round(f.width / scale),
     height: Math.round(f.height / scale),
     name: f.name,
-    confidence: f.confidence
+    confidence: f.confidence,
+    cooldown: f.cooldown,
+    cooldown_remaining: f.cooldown_remaining
   }));
-  if (lastFaces.length === 0) {
-    lastFaces = upscaled;
+  
+  // Always update faces, even if empty array (to clear old faces)
+  if (upscaled.length === 0) {
+    // If no faces detected, keep last faces for a bit longer
+    if (Date.now() - lastFacesTime > 1000) { // Only clear after 1 second of no faces
+      lastFaces = [];
+    }
   } else {
-    lastFaces = smoothFaces(lastFaces, upscaled);
+    if (lastFaces.length === 0) {
+      lastFaces = upscaled;
+    } else {
+      lastFaces = smoothFaces(lastFaces, upscaled);
+    }
+    lastFacesTime = Date.now();
   }
-  lastFacesTime = Date.now();
 }
 
 function updateCooldownDisplay(cooldownInfo) {
@@ -423,8 +488,15 @@ function showPopupNotification(popupInfo) {
   
   console.log('[POPUP] Showing popup:', popupInfo.style, 'for', popupInfo.member_name);
   
-  // Set popup style
+  // Set popup style with FORCE SOLID BACKGROUND
   popup.className = 'popup-notification';
+  
+  // Simple and effective inline styles
+  popup.style.background = '#10b981';
+  popup.style.backgroundColor = '#10b981';
+  popup.style.opacity = '1';
+  popup.style.color = 'white';
+  
   if (popupInfo.style === 'GRANTED') {
     popup.classList.add('granted');
     popupIcon.textContent = '✅';
@@ -468,11 +540,11 @@ function updatePerformanceMetrics(responseTime) {
   if (performanceMetrics.requestCount > 10) {  // After 10 requests, start adjusting
     const slowRequestRatio = performanceMetrics.slowRequests / performanceMetrics.requestCount;
     
-    if (slowRequestRatio > 0.3) {  // If more than 30% are slow
-      PROCESS_INTERVAL = Math.min(PROCESS_INTERVAL + 10, 100);  // Increase interval
+    if (slowRequestRatio > 0.4) {  // If more than 40% are slow (increased threshold)
+      PROCESS_INTERVAL = Math.min(PROCESS_INTERVAL + 5, 60);  // Increase interval more conservatively
       console.log(`[PERF] Performance degraded, increasing interval to ${PROCESS_INTERVAL}ms`);
-    } else if (slowRequestRatio < 0.1 && performanceMetrics.avgResponseTime < 500) {  // If less than 10% slow and avg < 500ms
-      PROCESS_INTERVAL = Math.max(PROCESS_INTERVAL - 5, 20);  // Decrease interval
+    } else if (slowRequestRatio < 0.05 && performanceMetrics.avgResponseTime < 300) {  // If less than 5% slow and avg < 300ms
+      PROCESS_INTERVAL = Math.max(PROCESS_INTERVAL - 2, 20);  // Decrease interval more conservatively
       console.log(`[PERF] Performance good, decreasing interval to ${PROCESS_INTERVAL}ms`);
     }
   }
@@ -701,6 +773,7 @@ function drawDisplay() {
   const sx = video.videoWidth ? canvas.width / video.videoWidth : 1;
   const sy = video.videoHeight ? canvas.height / video.videoHeight : 1;
   
+  /* Nonaktifkan blok ini untuk menghilangkan flickering
   for (const face of showFaces) {
     const { x, y, width, height, name, confidence, cooldown, cooldown_remaining } = face;
     // Adjust coordinates for horizontal flip
@@ -718,9 +791,9 @@ function drawDisplay() {
     }
     
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3; // Increased from 2 to 3 for better visibility
     ctx.strokeRect(dx, dy, dw, dh);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'; // Increased opacity from 0.7 to 0.8
     ctx.fillRect(dx, dy + dh - 25, dw, 25);
     ctx.fillStyle = '#ffffff';
     ctx.font = '14px Arial';
@@ -733,6 +806,8 @@ function drawDisplay() {
       ctx.fillText(`${name}`, dx + 5, dy + dh - 8);
     }
   }
+  */
+  
   requestAnimationFrame(drawDisplay);
 }
 

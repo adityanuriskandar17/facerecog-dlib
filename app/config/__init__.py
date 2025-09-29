@@ -16,6 +16,8 @@ GYM_API_KEY = os.getenv('GYM_API_KEY', '')
 GYM_BASE_URL = os.getenv('GYM_BASE_URL', '')
 GYM_LOGIN_URL = os.getenv('GYM_LOGIN_URL', '')
 GYM_PROFILE_URL = os.getenv('GYM_PROFILE_URL', '')
+GYM_GATE_URL = os.getenv('GATE_URL', 'https://ftl.gymmasteronline.com/portal/api/v2/member/kiosk/checkin')
+CHECKIN_ENABLED = os.getenv('CHECKIN_ENABLED', 'True').lower() == 'true'
 
 # Horizon GCloud Configuration
 HORIZON_FASTAPI_URL = os.getenv('HORIZON_FASTAPI_URL', 'https://ftlhorizon.com')
