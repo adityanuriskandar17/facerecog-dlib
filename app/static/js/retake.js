@@ -15,6 +15,8 @@ document.addEventListener('DOMContentLoaded', function() {
     let label = document.getElementById('similarityLabel');
     let burstProgress = document.getElementById('burstProgress');
     const registerActions = document.getElementById('registerActions');
+    const processBtn = document.getElementById('processBtn');
+    const burstStartBtn = document.getElementById('burstStartBtn');
     const burstRegisterBtn = document.getElementById('burstRegisterBtn');
     const uploadGymBtn = document.getElementById('uploadGymBtn');
     const uploadHorizonBtn = document.getElementById('uploadHorizonBtn');
@@ -99,91 +101,121 @@ document.addEventListener('DOMContentLoaded', function() {
         startCameraBtn.style.display = 'inline-block';
         captureBtn.style.display = 'none';
         stopCameraBtn.style.display = 'none';
+        
+        // Show process button instead of auto-comparing
+        if (processBtn) {
+            processBtn.style.display = 'inline-block';
+        }
 
-        // Trigger comparison against GymMaster photo with retry mechanism
-        try {
-            if (loader) loader.style.display = 'block';
-            if (resultBar) {
-                resultBar.textContent = '';
-                resultBar.className = 'similarity-result';
-            }
-            
-            // Retry mechanism for face detection
-            let res;
-            let json;
-            let retryCount = 0;
-            const maxRetries = 3;
-            
-            while (retryCount < maxRetries) {
-                try {
-                    res = await fetch('/compare-photo', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'same-origin',
-                        body: JSON.stringify({ image: dataURL })
-                    });
-                    
-                    json = await parseResponse(res);
-                    
-                    // If face detection failed, try again with different settings
-                    if (!json.success && json.error && json.error.includes('No face detected')) {
-                        retryCount++;
-                        if (retryCount < maxRetries) {
-                            console.log(`Face detection failed, retrying... (${retryCount}/${maxRetries})`);
-                            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
-                            continue;
-                        }
-                    }
-                    
-                    break; // Success or max retries reached
-                } catch (error) {
-                    retryCount++;
-                    if (retryCount < maxRetries) {
-                        console.log(`Request failed, retrying... (${retryCount}/${maxRetries})`);
-                        await new Promise(resolve => setTimeout(resolve, 1000));
-                        continue;
-                    }
-                    throw error;
-                }
-            }
-            
-            // Response already parsed in retry loop
-            if (loader) loader.style.display = 'none';
-            if (!json.success) {
-                alert(json.error || 'Gagal membandingkan foto');
+        // Store the captured image data for manual processing
+        window.capturedImageData = dataURL;
+        
+        // Show message that photo is ready for processing
+        if (resultBar) {
+            resultBar.textContent = 'Foto berhasil diambil. Klik "Proses Foto" untuk membandingkan.';
+            resultBar.className = 'similarity-result';
+        }
+        
+        // Don't auto-compare, wait for manual process button click
+        return;
+    });
+
+    // Process photo handler (manual comparison)
+    if (processBtn) {
+        processBtn.addEventListener('click', async () => {
+            if (!window.capturedImageData) {
+                alert('Tidak ada foto untuk diproses. Ambil foto terlebih dahulu.');
                 return;
             }
-            const pct = json.similarity ?? 0;
-            const dist = json.distance ?? 1.0;
-            const match = !!json.match;
+            
+            try {
+                if (loader) loader.style.display = 'block';
+                if (resultBar) {
+                    resultBar.textContent = '';
+                    resultBar.className = 'similarity-result';
+                }
+                
+                // Retry mechanism for face detection
+                let res;
+                let json;
+                let retryCount = 0;
+                const maxRetries = 3;
+                
+                while (retryCount < maxRetries) {
+                    try {
+                        res = await fetch('/compare-photo', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'same-origin',
+                            body: JSON.stringify({ image: window.capturedImageData })
+                        });
+                        
+                        json = await parseResponse(res);
+                        
+                        // If face detection failed, try again with different settings
+                        if (!json.success && json.error && json.error.includes('No face detected')) {
+                            retryCount++;
+                            if (retryCount < maxRetries) {
+                                console.log(`Face detection failed, retrying... (${retryCount}/${maxRetries})`);
+                                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+                                continue;
+                            }
+                        }
+                        
+                        break; // Success or max retries reached
+                    } catch (error) {
+                        retryCount++;
+                        if (retryCount < maxRetries) {
+                            console.log(`Request failed, retrying... (${retryCount}/${maxRetries})`);
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                            continue;
+                        }
+                        throw error;
+                    }
+                }
+                
+                // Response already parsed in retry loop
+                if (loader) loader.style.display = 'none';
+                if (!json.success) {
+                    alert(json.error || 'Gagal membandingkan foto');
+                    return;
+                }
+                const pct = json.similarity ?? 0;
+                const dist = json.distance ?? 1.0;
+                const match = !!json.match;
 
-            // Category label
-            let category = 'Kurang mirip';
-            let catClass = 'label-low';
-            if (pct >= 75) { category = 'Sangat mirip'; catClass = 'label-high'; }
-            else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
+                // Category label
+                let category = 'Kurang mirip';
+                let catClass = 'label-low';
+                if (pct >= 75) { category = 'Sangat mirip'; catClass = 'label-high'; }
+                else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
 
-            if (resultBar) {
-                resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist})`;
-                resultBar.classList.remove('match','no-match');
+                if (resultBar) {
+                    resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist})`;
+                    resultBar.classList.remove('match','no-match');
+                }
+                if (meter && meterFill) {
+                    meter.style.display = 'block';
+                    // animate to percentage
+                    meterFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+                }
+                if (label) {
+                    label.style.display = 'block';
+                    label.className = `similarity-label ${catClass}`;
+                    label.textContent = category + (match ? ' • Lolos ambang' : ' • Di bawah ambang');
+                }
+                // Show actions always (regardless of match status)
+                if (registerActions) registerActions.style.display = 'flex';
+                
+                // Hide process button after processing
+                if (processBtn) processBtn.style.display = 'none';
+                
+            } catch (e) {
+                if (loader) loader.style.display = 'none';
+                alert('Terjadi kesalahan saat memproses: ' + (e?.message || e));
             }
-            if (meter && meterFill) {
-                meter.style.display = 'block';
-                // animate to percentage
-                meterFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-            }
-            if (label) {
-                label.style.display = 'block';
-                label.className = `similarity-label ${catClass}`;
-                label.textContent = category + (match ? ' • Lolos ambang' : ' • Di bawah ambang');
-            }
-            // Show actions always (regardless of match status)
-            if (registerActions) registerActions.style.display = 'flex';
-        } catch (e) {
-            if (loader) loader.style.display = 'none';
-            alert('Terjadi kesalahan saat memproses: ' + (e?.message || e));
-        }
-    });
+        });
+    }
 
     // Stop camera handler
     stopCameraBtn.addEventListener('click', () => {
@@ -213,36 +245,89 @@ document.addEventListener('DOMContentLoaded', function() {
         preview.style.display = 'none';
         cameraContainer.style.display = 'none';
         
-        // Show/hide buttons
+        // Show/hide buttons - only reset camera-related buttons
         startCameraBtn.style.display = 'inline-block';
         captureBtn.style.display = 'none';
         stopCameraBtn.style.display = 'none';
-        if (registerActions) registerActions.style.display = 'none';
+        if (processBtn) processBtn.style.display = 'none';
+        
+        // Keep registerActions visible (don't hide action buttons)
+        if (registerActions) registerActions.style.display = 'flex';
+        
+        // Reset presentation (clear similarity results)
+        if (resultBar) {
+            resultBar.textContent = '';
+            resultBar.className = 'similarity-result';
+        }
+        if (meter) meter.style.display = 'none';
+        if (label) label.style.display = 'none';
+        
+        // Clear captured image data
+        window.capturedImageData = null;
     });
 
     // Manual burst register handler
     if (burstRegisterBtn) burstRegisterBtn.addEventListener('click', async () => {
-        // Prepare UI
-        if (loader) loader.style.display = 'block';
-        if (burstProgress) burstProgress.textContent = 'Mengambil sampel wajah... 0%';
-        if (meter) meter.style.display = 'block';
-        if (meterFill) meterFill.style.width = '0%';
-        if (label) label.style.display = 'none';
-
-        // Capture burst frames; if stream tidak aktif, buka stream sementara
-        const images = [];
-        let tempStream = null;
-        let srcVideo = video;
         try {
-            if (!currentStream || !video.srcObject) {
-                tempStream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' } });
-                const tempVideo = document.createElement('video');
-                tempVideo.autoplay = true; tempVideo.muted = true; tempVideo.srcObject = tempStream;
-                srcVideo = tempVideo;
-                await new Promise(r => setTimeout(r, 120));
+            // Open camera first
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { 
+                    width: { ideal: 1280, min: 640 }, 
+                    height: { ideal: 720, min: 480 }, 
+                    frameRate: { ideal: 30, min: 15 } 
+                }, 
+                audio: false 
+            });
+            
+            currentStream = stream;
+            video.srcObject = stream;
+            video.play();
+            
+            // Show camera and hide other elements
+            cameraContainer.style.display = 'block';
+            preview.style.display = 'none';
+            
+            // Show/hide buttons
+            startCameraBtn.style.display = 'none';
+            captureBtn.style.display = 'none';
+            stopCameraBtn.style.display = 'inline-block';
+            
+            // Show burst start button
+            if (burstStartBtn) {
+                burstStartBtn.style.display = 'inline-block';
             }
-            const width = srcVideo.videoWidth || 640;
-            const height = srcVideo.videoHeight || 480;
+            
+            // Show message
+            if (resultBar) {
+                resultBar.textContent = 'Kamera siap untuk burst 20. Klik "Mulai Burst" untuk memulai.';
+                resultBar.className = 'similarity-result';
+            }
+            
+        } catch (error) {
+            if (error.name === 'NotAllowedError') {
+                alert('Akses kamera ditolak. Silakan izinkan akses kamera dan coba lagi.');
+            } else if (error.name === 'NotFoundError') {
+                alert('Kamera tidak ditemukan. Pastikan kamera terhubung.');
+            } else {
+                alert('Gagal akses kamera: ' + error.message);
+            }
+        }
+    });
+
+    // Burst start handler (actual burst capture)
+    if (burstStartBtn) {
+        burstStartBtn.addEventListener('click', async () => {
+            // Prepare UI
+            if (loader) loader.style.display = 'block';
+            if (burstProgress) burstProgress.textContent = 'Mengambil sampel wajah... 0%';
+            if (meter) meter.style.display = 'block';
+            if (meterFill) meterFill.style.width = '0%';
+            if (label) label.style.display = 'none';
+
+            // Capture burst frames
+            const images = [];
+            const width = video.videoWidth || 640;
+            const height = video.videoHeight || 480;
             const bCanvas = document.createElement('canvas');
             bCanvas.width = width; bCanvas.height = height;
             const bCtx = bCanvas.getContext('2d');
@@ -250,61 +335,72 @@ document.addEventListener('DOMContentLoaded', function() {
                 bCtx.save();
                 bCtx.translate(bCanvas.width, 0);
                 bCtx.scale(-1, 1);
-                bCtx.drawImage(srcVideo, 0, 0, bCanvas.width, bCanvas.height);
+                bCtx.drawImage(video, 0, 0, bCanvas.width, bCanvas.height);
                 bCtx.restore();
-                images.push(bCanvas.toDataURL('image/jpeg', 0.8));
-                await new Promise(r => setTimeout(r, 50));
-                const pctFrames = Math.round(((i + 1) / 20) * 100);
-                if (burstProgress) burstProgress.textContent = `Mengambil sampel wajah... ${pctFrames}%`;
-                if (meterFill) meterFill.style.width = `${Math.min(100, Math.round(((i+1)/20)*60))}%`;
+                
+                const dataURL = bCanvas.toDataURL('image/jpeg', 0.8);
+                images.push(dataURL);
+                
+                if (burstProgress) {
+                    burstProgress.textContent = `Mengambil sampel wajah... ${Math.round((i + 1) / 20 * 100)}%`;
+                }
+                
+                // Wait between captures
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
-        } finally {
-            if (tempStream) tempStream.getTracks().forEach(t => t.stop());
-        }
-
-        // Send to burst endpoint - email will be auto-detected from session
-        const email = (window.CURRENT_EMAIL || '').trim()
-        console.log('Sending burst request with email:', email || 'auto-detect from session');
-        
-        try {
-            if (burstProgress) burstProgress.textContent = 'Menghitung encoding...';
-            const res = await fetch('/compare-photo-burst', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'same-origin',
-                body: JSON.stringify({ images, email: email || null })
-            });
-            const json = await parseResponse(res);
-            if (loader) loader.style.display = 'none';
-            const pct = json.similarity ?? 0;
-            const dist = json.distance ?? 1.0;
-            const match = !!json.match;
-            let category = 'Kurang mirip';
-            let catClass = 'label-low';
-            if (pct >= 75) { category = 'Sangat mirip'; catClass = 'label-high'; }
-            else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
-            if (resultBar) resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist})`;
-            if (meterFill) meterFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-            if (label) {
-                label.style.display = 'block';
-                label.className = `similarity-label ${catClass}`;
-                const savedNote = json.saved ? ' • Encoding tersimpan' : '';
-                label.textContent = category + (match ? ' • Lolos ambang' : ' • Di bawah ambang') + savedNote;
+            
+            // Hide burst start button
+            if (burstStartBtn) burstStartBtn.style.display = 'none';
+            
+            // Process burst images
+            try {
+                // Get email from login session
+                const email = (window.CURRENT_EMAIL || '').trim();
+                console.log('Sending burst request with email:', email || 'auto-detect from session');
+                
+                const res = await fetch('/compare-photo-burst', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ images, email: email || null })
+                });
+                const json = await parseResponse(res);
+                if (loader) loader.style.display = 'none';
+                
+                // Process results
+                const pct = json.similarity ?? 0;
+                const dist = json.distance ?? 1.0;
+                const match = !!json.match;
+                let category = 'Kurang mirip';
+                let catClass = 'label-low';
+                if (pct >= 75) { category = 'Sangat mirip'; catClass = 'label-high'; }
+                else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
+                
+                if (resultBar) resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist})`;
+                if (meterFill) meterFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+                if (label) {
+                    label.style.display = 'block';
+                    label.className = `similarity-label ${catClass}`;
+                    const savedNote = json.saved ? ' • Encoding tersimpan' : '';
+                    label.textContent = category + (match ? ' • Lolos ambang' : ' • Di bawah ambang') + savedNote;
+                }
+                if (json.saved) {
+                    if (burstProgress) burstProgress.textContent = 'Encoding disimpan ke database.';
+                } else if (json.save_reason) {
+                    if (burstProgress) burstProgress.textContent = 'Encoding tidak disimpan: ' + json.save_reason;
+                } else {
+                    if (burstProgress) burstProgress.textContent = '';
+                }
+                
+                // Keep actions visible (don't hide after burst register)
+                if (registerActions) registerActions.style.display = 'flex';
+                
+            } catch (e) {
+                if (loader) loader.style.display = 'none';
+                alert('Terjadi kesalahan saat burst: ' + (e?.message || e));
             }
-            if (json.saved) {
-                if (burstProgress) burstProgress.textContent = 'Encoding disimpan ke database.';
-            } else if (json.save_reason) {
-                if (burstProgress) burstProgress.textContent = 'Encoding tidak disimpan: ' + json.save_reason;
-            } else {
-                if (burstProgress) burstProgress.textContent = '';
-            }
-            // Keep actions visible (don't hide after burst register)
-            if (registerActions) registerActions.style.display = 'flex';
-        } catch (e) {
-            if (loader) loader.style.display = 'none';
-            alert('Terjadi kesalahan saat burst: ' + (e?.message || e));
-        }
-    });
+        });
+    }
 
     // Upload the most recent preview photo to GymMaster
     if (uploadGymBtn) uploadGymBtn.addEventListener('click', async () => {
