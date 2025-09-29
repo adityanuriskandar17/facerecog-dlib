@@ -21,14 +21,26 @@ document.addEventListener('DOMContentLoaded', function() {
     
     let currentStream = null;
 
+    // Helper function to parse response JSON safely
+    async function parseResponse(res) {
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            return await res.json();
+        } else {
+            const text = await res.text();
+            return { success: false, error: text };
+        }
+    }
+
     // Start camera handler
     startCameraBtn.addEventListener('click', async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { 
-                    width: { ideal: 640 }, 
-                    height: { ideal: 480 },
-                    facingMode: 'user'
+                    width: { ideal: 1280, min: 640 }, 
+                    height: { ideal: 720, min: 480 },
+                    facingMode: 'user',
+                    frameRate: { ideal: 30, min: 15 }
                 } 
             });
             
@@ -88,27 +100,54 @@ document.addEventListener('DOMContentLoaded', function() {
         captureBtn.style.display = 'none';
         stopCameraBtn.style.display = 'none';
 
-        // Trigger comparison against GymMaster photo
+        // Trigger comparison against GymMaster photo with retry mechanism
         try {
             if (loader) loader.style.display = 'block';
             if (resultBar) {
                 resultBar.textContent = '';
                 resultBar.className = 'similarity-result';
             }
-            const res = await fetch('/compare-photo', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'same-origin',
-                body: JSON.stringify({ image: dataURL })
-            });
-            const contentType = res.headers.get('content-type') || '';
+            
+            // Retry mechanism for face detection
+            let res;
             let json;
-            if (contentType.includes('application/json')) {
-                json = await res.json();
-            } else {
-                const text = await res.text();
-                throw new Error(text || `HTTP ${res.status}`);
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            while (retryCount < maxRetries) {
+                try {
+                    res = await fetch('/compare-photo', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ image: dataURL })
+                    });
+                    
+                    json = await parseResponse(res);
+                    
+                    // If face detection failed, try again with different settings
+                    if (!json.success && json.error && json.error.includes('No face detected')) {
+                        retryCount++;
+                        if (retryCount < maxRetries) {
+                            console.log(`Face detection failed, retrying... (${retryCount}/${maxRetries})`);
+                            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+                            continue;
+                        }
+                    }
+                    
+                    break; // Success or max retries reached
+                } catch (error) {
+                    retryCount++;
+                    if (retryCount < maxRetries) {
+                        console.log(`Request failed, retrying... (${retryCount}/${maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        continue;
+                    }
+                    throw error;
+                }
             }
+            
+            // Response already parsed in retry loop
             if (loader) loader.style.display = 'none';
             if (!json.success) {
                 alert(json.error || 'Gagal membandingkan foto');
@@ -138,8 +177,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 label.className = `similarity-label ${catClass}`;
                 label.textContent = category + (match ? ' • Lolos ambang' : ' • Di bawah ambang');
             }
-            // Show actions only if not match
-            if (registerActions) registerActions.style.display = match ? 'none' : 'flex';
+            // Show actions always (regardless of match status)
+            if (registerActions) registerActions.style.display = 'flex';
         } catch (e) {
             if (loader) loader.style.display = 'none';
             alert('Terjadi kesalahan saat memproses: ' + (e?.message || e));
@@ -235,14 +274,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 credentials: 'same-origin',
                 body: JSON.stringify({ images, email: email || null })
             });
-            const contentType = res.headers.get('content-type') || '';
-            let json;
-            if (contentType.includes('application/json')) {
-                json = await res.json();
-            } else {
-                const text = await res.text();
-                throw new Error(text || `HTTP ${res.status}`);
-            }
+            const json = await parseResponse(res);
             if (loader) loader.style.display = 'none';
             const pct = json.similarity ?? 0;
             const dist = json.distance ?? 1.0;
@@ -266,7 +298,8 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 if (burstProgress) burstProgress.textContent = '';
             }
-            if (registerActions) registerActions.style.display = 'none';
+            // Keep actions visible (don't hide after burst register)
+            if (registerActions) registerActions.style.display = 'flex';
         } catch (e) {
             if (loader) loader.style.display = 'none';
             alert('Terjadi kesalahan saat burst: ' + (e?.message || e));
@@ -294,7 +327,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 credentials: 'same-origin',
                 body: JSON.stringify({ image: preview.src })
             });
-            const json = await res.json();
+            const json = await parseResponse(res);
             if (loader) loader.style.display = 'none';
             if (!json.success) {
                 alert('Gagal update foto: ' + (json?.response?.error || json?.error || 'unknown'));
@@ -328,7 +361,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 credentials: 'same-origin',
                 body: JSON.stringify({ image: preview.src })
             });
-            const json = await res.json();
+            const json = await parseResponse(res);
             if (loader) loader.style.display = 'none';
             if (!json.success) {
                 alert('Gagal update foto ke Horizon: ' + (json?.response?.error || json?.error || 'unknown'));

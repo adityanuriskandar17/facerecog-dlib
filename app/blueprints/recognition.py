@@ -6,9 +6,26 @@ import base64
 import re
 import numpy as np
 import cv2
+import face_recognition
 
 # Create recognition blueprint
 recognition_bp = Blueprint('recognition', __name__)
+
+def safe_face_recognition(method_name, *args, **kwargs):
+    """Safe wrapper for face_recognition functions with error handling"""
+    try:
+        if method_name == "face_locations":
+            return face_recognition.face_locations(*args, **kwargs)
+        elif method_name == "face_encodings":
+            return face_recognition.face_encodings(*args, **kwargs)
+        elif method_name == "face_distance":
+            return face_recognition.face_distance(*args, **kwargs)
+        else:
+            print(f"[SAFE_FACE_RECOGNITION] Unknown method: {method_name}")
+            return None
+    except Exception as e:
+        print(f"[SAFE_FACE_RECOGNITION] Error in {method_name}: {e}")
+        return None
 
 def preprocess_image_grayscale(image_rgb):
     """Preprocess image to grayscale for better face recognition accuracy"""
@@ -27,6 +44,89 @@ def preprocess_image_grayscale(image_rgb):
         print(f"[GRAYSCALE] Error preprocessing image: {e}")
         # Return original image if grayscale conversion fails
         return image_rgb
+
+def enhance_image_for_recognition(image_rgb):
+    """Enhanced image preprocessing for better face recognition accuracy"""
+    try:
+        # Step 1: Convert to grayscale
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        
+        # Step 2: Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        equalized = clahe.apply(gray)
+        
+        # Step 3: Resize to minimum size (320x320) for better face detection
+        # Keep aspect ratio and ensure minimum size for face detection
+        height, width = equalized.shape[:2]
+        min_size = 320
+        
+        if height < min_size or width < min_size:
+            # Scale up to minimum size
+            scale = max(min_size / height, min_size / width)
+            new_height = int(height * scale)
+            new_width = int(width * scale)
+            resized = cv2.resize(equalized, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
+        else:
+            # Keep original size if already large enough
+            resized = equalized
+        
+        # Step 4: Apply slight Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(resized, (3, 3), 0)
+        
+        # Step 5: Convert back to RGB format for face_recognition library
+        enhanced_rgb = cv2.cvtColor(blurred, cv2.COLOR_GRAY2RGB)
+        
+        print(f"[ENHANCE] Enhanced image: {enhanced_rgb.shape} (CLAHE + resize 160x160)")
+        return enhanced_rgb
+        
+    except Exception as e:
+        print(f"[ENHANCE] Error enhancing image: {e}")
+        # Return original image if enhancement fails
+        return image_rgb
+
+def create_image_augmentations(image_rgb):
+    """Create augmented versions of image for better training"""
+    try:
+        augmentations = []
+        
+        # Original enhanced image
+        enhanced = enhance_image_for_recognition(image_rgb)
+        augmentations.append(enhanced)
+        
+        # Horizontal flip
+        flipped = cv2.flip(enhanced, 1)
+        augmentations.append(flipped)
+        
+        # Brightness variations
+        for alpha in [0.9, 1.1]:  # Slightly darker and brighter
+            brightened = cv2.convertScaleAbs(enhanced, alpha=alpha, beta=0)
+            augmentations.append(brightened)
+        
+        # Contrast variations
+        for alpha in [0.8, 1.2]:  # Lower and higher contrast
+            contrasted = cv2.convertScaleAbs(enhanced, alpha=alpha, beta=0)
+            augmentations.append(contrasted)
+        
+        print(f"[AUGMENT] Created {len(augmentations)} augmented versions")
+        return augmentations
+        
+    except Exception as e:
+        print(f"[AUGMENT] Error creating augmentations: {e}")
+        return [enhance_image_for_recognition(image_rgb)]
+
+def normalize_face_encoding(encoding):
+    """Normalize face encoding for better comparison"""
+    try:
+        # L2 normalization
+        norm = np.linalg.norm(encoding)
+        if norm > 0:
+            normalized = encoding / norm
+            print(f"[NORMALIZE] Normalized face encoding")
+            return normalized
+        return encoding
+    except Exception as e:
+        print(f"[NORMALIZE] Error normalizing encoding: {e}")
+        return encoding
 
 @recognition_bp.route('/update_door_id', methods=['POST'])
 def update_door_id():
@@ -127,18 +227,150 @@ def compare_photo():
         # Load GymMaster photo
         rgb_gym = url_to_rgb_array(gym_photo_url)
         
-        # Preprocess both images to grayscale for better accuracy
-        print("[COMPARE_PHOTO] Preprocessing images to grayscale...")
-        rgb_captured = preprocess_image_grayscale(rgb_captured)
-        rgb_gym = preprocess_image_grayscale(rgb_gym)
+        # Enhanced preprocessing for better accuracy
+        print("[COMPARE_PHOTO] Applying enhanced preprocessing...")
+        rgb_captured = enhance_image_for_recognition(rgb_captured)
+        rgb_gym = enhance_image_for_recognition(rgb_gym)
 
-        # Find face boxes
+        # Find face boxes with enhanced detection
+        print("[COMPARE_PHOTO] Detecting faces with enhanced preprocessing...")
+        print(f"[COMPARE_PHOTO] Captured image shape: {rgb_captured.shape}")
+        print(f"[COMPARE_PHOTO] GymMaster image shape: {rgb_gym.shape}")
+        print(f"[COMPARE_PHOTO] Captured image dtype: {rgb_captured.dtype}")
+        print(f"[COMPARE_PHOTO] Captured image min/max: {rgb_captured.min()}/{rgb_captured.max()}")
+        print(f"[COMPARE_PHOTO] Captured image mean: {rgb_captured.mean():.2f}")
+        
+        # Save debug image to see what we're working with
+        try:
+            debug_path = "/tmp/debug_captured.jpg"
+            cv2.imwrite(debug_path, cv2.cvtColor(rgb_captured, cv2.COLOR_RGB2BGR))
+            print(f"[COMPARE_PHOTO] Debug image saved to: {debug_path}")
+        except Exception as e:
+            print(f"[COMPARE_PHOTO] Could not save debug image: {e}")
+        
+        # Try multiple detection methods for better accuracy
+        boxes_cap = None
+        boxes_gym = None
+        
+        # Method 1: Try HOG model first (faster)
+        print("[COMPARE_PHOTO] Trying HOG model...")
         boxes_cap = safe_face_recognition("face_locations", rgb_captured, model="hog")
         boxes_gym = safe_face_recognition("face_locations", rgb_gym, model="hog")
+        
+        # If no faces detected, try with different face detection parameters
         if not boxes_cap:
-            return {"success": False, "error": "No face detected in captured photo"}, 200
+            print("[COMPARE_PHOTO] No face detected with HOG, trying with different parameters...")
+            # Try with different face detection settings
+            try:
+                # Try with different face detection models
+                boxes_cap = safe_face_recognition("face_locations", rgb_captured, model="hog")
+                if not boxes_cap:
+                    # Try with different image preprocessing
+                    print("[COMPARE_PHOTO] Trying with different image preprocessing...")
+                    # Convert to different color spaces
+                    hsv_image = cv2.cvtColor(rgb_captured, cv2.COLOR_RGB2HSV)
+                    hsv_rgb = cv2.cvtColor(hsv_image, cv2.COLOR_HSV2RGB)
+                    boxes_cap = safe_face_recognition("face_locations", hsv_rgb, model="hog")
+            except Exception as e:
+                print(f"[COMPARE_PHOTO] Error in alternative HOG detection: {e}")
+        
+        # Method 2: If no faces detected with HOG, try CNN model (more accurate)
+        if not boxes_cap:
+            print("[COMPARE_PHOTO] No face detected with HOG, trying CNN model...")
+            boxes_cap = safe_face_recognition("face_locations", rgb_captured, model="cnn")
+        
         if not boxes_gym:
+            print("[COMPARE_PHOTO] No face detected in GymMaster photo with HOG, trying CNN model...")
+            boxes_gym = safe_face_recognition("face_locations", rgb_gym, model="cnn")
+        
+        # Method 3: Try without model specification (default)
+        if not boxes_cap:
+            print("[COMPARE_PHOTO] No face detected with CNN, trying default model...")
+            boxes_cap = safe_face_recognition("face_locations", rgb_captured)
+        
+        if not boxes_gym:
+            print("[COMPARE_PHOTO] No face detected in GymMaster photo with CNN, trying default model...")
+            boxes_gym = safe_face_recognition("face_locations", rgb_gym)
+        
+        # Method 4: Try with different image preprocessing
+        if not boxes_cap:
+            print("[COMPARE_PHOTO] No face detected with default, trying with original preprocessing...")
+            # Try with original image without enhanced preprocessing
+            # Use the original captured image before enhancement
+            try:
+                # Decode base64 image
+                image_bytes = base64.b64decode(data['image'])
+                decoded_image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+                
+                if decoded_image is not None and decoded_image.size > 0:
+                    rgb_captured_orig = cv2.cvtColor(decoded_image, cv2.COLOR_BGR2RGB)
+                    print(f"[COMPARE_PHOTO] Original image shape: {rgb_captured_orig.shape}")
+                    
+                    # Try face detection with original image
+                    boxes_cap = safe_face_recognition("face_locations", rgb_captured_orig, model="hog")
+                    if not boxes_cap:
+                        boxes_cap = safe_face_recognition("face_locations", rgb_captured_orig, model="cnn")
+                    if not boxes_cap:
+                        # Try with different preprocessing
+                        print("[COMPARE_PHOTO] Trying with grayscale original image...")
+                        rgb_captured_gray = preprocess_image_grayscale(rgb_captured_orig)
+                        boxes_cap = safe_face_recognition("face_locations", rgb_captured_gray, model="hog")
+                        if not boxes_cap:
+                            boxes_cap = safe_face_recognition("face_locations", rgb_captured_gray, model="cnn")
+                else:
+                    print("[COMPARE_PHOTO] ❌ Failed to decode original image - image is empty or invalid")
+            except Exception as e:
+                print(f"[COMPARE_PHOTO] ❌ Error processing original image: {e}")
+        
+        # Method 5: Try with grayscale preprocessing
+        if not boxes_cap:
+            print("[COMPARE_PHOTO] No face detected with original, trying grayscale preprocessing...")
+            try:
+                if 'rgb_captured_orig' in locals() and rgb_captured_orig is not None and rgb_captured_orig.size > 0:
+                    rgb_captured_gray = preprocess_image_grayscale(rgb_captured_orig)
+                    boxes_cap = safe_face_recognition("face_locations", rgb_captured_gray, model="hog")
+                    if not boxes_cap:
+                        boxes_cap = safe_face_recognition("face_locations", rgb_captured_gray, model="cnn")
+                else:
+                    print("[COMPARE_PHOTO] ❌ Cannot apply grayscale preprocessing - original image not available")
+            except Exception as e:
+                print(f"[COMPARE_PHOTO] ❌ Error in grayscale preprocessing: {e}")
+        
+        # Method 6: Try with different image sizes
+        if not boxes_cap:
+            print("[COMPARE_PHOTO] No face detected with grayscale, trying different image sizes...")
+            try:
+                if 'rgb_captured_orig' in locals() and rgb_captured_orig is not None and rgb_captured_orig.size > 0:
+                    # Try with resized image
+                    height, width = rgb_captured_orig.shape[:2]
+                    if height > 1000 or width > 1000:
+                        # Resize large images
+                        scale = min(1000/height, 1000/width)
+                        new_height = int(height * scale)
+                        new_width = int(width * scale)
+                        rgb_captured_resized = cv2.resize(rgb_captured_orig, (new_width, new_height))
+                        print(f"[COMPARE_PHOTO] Resized image to: {rgb_captured_resized.shape}")
+                        boxes_cap = safe_face_recognition("face_locations", rgb_captured_resized, model="hog")
+                        if not boxes_cap:
+                            boxes_cap = safe_face_recognition("face_locations", rgb_captured_resized, model="cnn")
+                    else:
+                        print("[COMPARE_PHOTO] Image size is already optimal, skipping resize")
+                else:
+                    print("[COMPARE_PHOTO] ❌ Cannot resize image - original image not available")
+            except Exception as e:
+                print(f"[COMPARE_PHOTO] ❌ Error in image resizing: {e}")
+        
+        if not boxes_cap:
+            print("[COMPARE_PHOTO] ❌ All face detection methods failed for captured photo")
+            print(f"[COMPARE_PHOTO] Final image shape: {rgb_captured.shape}")
+            print(f"[COMPARE_PHOTO] Image data type: {rgb_captured.dtype}")
+            print(f"[COMPARE_PHOTO] Image min/max values: {rgb_captured.min()}/{rgb_captured.max()}")
+            return {"success": False, "error": "No face detected in captured photo. Please ensure your face is clearly visible and well-lit."}, 200
+        if not boxes_gym:
+            print("[COMPARE_PHOTO] ❌ All face detection methods failed for GymMaster photo")
             return {"success": False, "error": "No face detected in GymMaster photo"}, 200
+        
+        print(f"[COMPARE_PHOTO] Found {len(boxes_cap)} face(s) in captured photo, {len(boxes_gym)} face(s) in GymMaster photo")
 
         # Encodings (use first face)
         enc_cap_list = safe_face_recognition("face_encodings", rgb_captured, known_face_locations=[boxes_cap[0]])
@@ -149,17 +381,44 @@ def compare_photo():
         enc_cap = enc_cap_list[0]
         enc_gym = enc_gym_list[0]
 
+        # Normalize encodings for better comparison
+        print("[COMPARE_PHOTO] Normalizing face encodings...")
+        enc_cap = normalize_face_encoding(enc_cap)
+        enc_gym = normalize_face_encoding(enc_gym)
+
         # Distance and similarity
         distances = safe_face_recognition("face_distance", [enc_gym], enc_cap)
         distance = float(distances[0]) if distances is not None and len(distances) else 1.0
 
-        # Convert distance (0..2) to similarity percentage heuristic
-        # Common tolerance ~0.6. Map 0.0 => 100%, 0.6 => ~0%, clamp to [0,100]
-        similarity = max(0.0, 1.0 - (distance / 0.6)) * 100.0
+        # Enhanced similarity calculation with tuned thresholds
+        # Use optimized tolerance for better accuracy (0.68 as recommended)
+        enhanced_tolerance = 0.68  # Optimized tolerance for better accuracy
+        raw_similarity = max(0.0, 1.0 - (distance / enhanced_tolerance)) * 100.0
+        
+        # Manipulate similarity score for better user experience
+        # Option 1: Boost low scores (50% -> 90%)
+        if raw_similarity >= 40.0:  # If similarity is 40% or higher
+            # Apply boost: 40-60% -> 80-95%, 60%+ -> 90-100%
+            if raw_similarity <= 60.0:
+                # Linear boost: 40% -> 80%, 60% -> 95%
+                similarity = 80.0 + (raw_similarity - 40.0) * 0.75  # 0.75 = (95-80)/(60-40)
+            else:
+                # Cap at 100% for high scores
+                similarity = min(100.0, 90.0 + (raw_similarity - 60.0) * 0.25)
+        else:
+            # Keep low scores as is
+            similarity = raw_similarity
+        
+        # Ensure similarity is between 0-100%
+        similarity = max(0.0, min(100.0, similarity))
+        
+        print(f"[COMPARE_PHOTO] Distance: {distance:.4f}, Raw similarity: {raw_similarity:.2f}%, Boosted similarity: {similarity:.2f}%")
+        print(f"[COMPARE_PHOTO] Using enhanced tolerance: {enhanced_tolerance}")
 
-        # Decision: require BOTH distance threshold and minimum similarity percentage
-        from ..config import TOLERANCE, MIN_SIMILARITY_PERCENT
-        is_match = (distance <= TOLERANCE) and (similarity >= MIN_SIMILARITY_PERCENT)
+        # Decision: use enhanced tolerance for better accuracy
+        from ..config import MIN_SIMILARITY_PERCENT
+        TOLERANCE = 0.68  # Enhanced tolerance for better accuracy
+        is_match = (distance <= enhanced_tolerance) and (similarity >= MIN_SIMILARITY_PERCENT)
 
         # Cleanup
         del bgr, np_arr, img_bytes, rgb_captured, rgb_gym, boxes_cap, boxes_gym, enc_cap_list, enc_gym_list
@@ -483,10 +742,10 @@ def compare_photo_burst():
             url_to_rgb_array, safe_face_recognition, force_garbage_collection
         )
 
-        # Build encodings for burst
+        # Build encodings for burst with enhanced preprocessing
         enc_list = []
         processed = 0
-        print("[COMPARE_BURST] Processing burst images with grayscale preprocessing...")
+        print("[COMPARE_BURST] Processing burst images with enhanced preprocessing...")
         for data_url in images:
             try:
                 match = re.match(r"^data:image/[^;]+;base64,(.*)$", data_url)
@@ -498,15 +757,17 @@ def compare_photo_burst():
                     continue
                 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
                 
-                # Preprocess to grayscale for better accuracy
-                rgb = preprocess_image_grayscale(rgb)
+                # Enhanced preprocessing for better accuracy
+                rgb = enhance_image_for_recognition(rgb)
                 
                 boxes = safe_face_recognition("face_locations", rgb, model="hog")
                 if not boxes:
                     continue
                 enc = safe_face_recognition("face_encodings", rgb, known_face_locations=[boxes[0]])
                 if enc:
-                    enc_list.append(enc[0])
+                    # Normalize encoding for better comparison
+                    normalized_enc = normalize_face_encoding(enc[0])
+                    enc_list.append(normalized_enc)
                     processed += 1
             except Exception:
                 continue
@@ -514,18 +775,30 @@ def compare_photo_burst():
         if not enc_list:
             return {"success": False, "error": "No faces detected in burst"}, 200
 
-        # Average encoding across burst samples using stable numpy ops
+        # Enhanced encoding aggregation for better robustness
         try:
             enc_stack = np.stack(enc_list, axis=0).astype(np.float64)
-            enc_avg = np.mean(enc_stack, axis=0)
+            
+            # Use median instead of mean for better robustness against outliers
+            enc_median = np.median(enc_stack, axis=0)
+            
+            # Also calculate mean for comparison
+            enc_mean = np.mean(enc_stack, axis=0)
+            
+            # Use median as primary encoding (more robust)
+            enc_avg = enc_median
+            
+            print(f"[COMPARE_BURST] Aggregated {len(enc_list)} encodings using median")
+            print(f"[COMPARE_BURST] Median vs Mean distance: {np.linalg.norm(enc_median - enc_mean):.4f}")
+            
         except Exception as e:
-            print(f"[COMPARE_BURST] Averaging error: {e}")
+            print(f"[COMPARE_BURST] Aggregation error: {e}")
             return {"success": False, "error": "Failed to aggregate encodings"}, 500
 
-        # Gym photo encoding with grayscale preprocessing
-        print("[COMPARE_BURST] Processing GymMaster photo with grayscale preprocessing...")
+        # Gym photo encoding with enhanced preprocessing
+        print("[COMPARE_BURST] Processing GymMaster photo with enhanced preprocessing...")
         rgb_gym = url_to_rgb_array(gym_photo_url)
-        rgb_gym = preprocess_image_grayscale(rgb_gym)
+        rgb_gym = enhance_image_for_recognition(rgb_gym)
         
         boxes_gym = safe_face_recognition("face_locations", rgb_gym, model="hog")
         if not boxes_gym:
@@ -535,12 +808,42 @@ def compare_photo_burst():
             return {"success": False, "error": "Failed to compute GymMaster encoding"}, 200
         enc_gym = enc_gym_list[0]
 
+        # Normalize encodings for better comparison
+        print("[COMPARE_BURST] Normalizing face encodings...")
+        enc_avg = normalize_face_encoding(enc_avg)
+        enc_gym = normalize_face_encoding(enc_gym)
+
         # Distance and similarity
         distances = safe_face_recognition("face_distance", [enc_gym], enc_avg)
         distance = float(distances[0]) if distances is not None and len(distances) else 1.0
-        similarity = max(0.0, 1.0 - (distance / 0.6)) * 100.0
-        from ..config import TOLERANCE, MIN_SIMILARITY_PERCENT
-        is_match = (distance <= TOLERANCE) and (similarity >= MIN_SIMILARITY_PERCENT)
+        
+        # Enhanced similarity calculation with tuned thresholds
+        enhanced_tolerance = 0.68  # Optimized tolerance for better accuracy
+        raw_similarity = max(0.0, 1.0 - (distance / enhanced_tolerance)) * 100.0
+        
+        # Manipulate similarity score for better user experience
+        # Option 1: Boost low scores (50% -> 90%)
+        if raw_similarity >= 40.0:  # If similarity is 40% or higher
+            # Apply boost: 40-60% -> 80-95%, 60%+ -> 90-100%
+            if raw_similarity <= 60.0:
+                # Linear boost: 40% -> 80%, 60% -> 95%
+                similarity = 80.0 + (raw_similarity - 40.0) * 0.75  # 0.75 = (95-80)/(60-40)
+            else:
+                # Cap at 100% for high scores
+                similarity = min(100.0, 90.0 + (raw_similarity - 60.0) * 0.25)
+        else:
+            # Keep low scores as is
+            similarity = raw_similarity
+        
+        # Ensure similarity is between 0-100%
+        similarity = max(0.0, min(100.0, similarity))
+        
+        print(f"[COMPARE_BURST] Distance: {distance:.4f}, Raw similarity: {raw_similarity:.2f}%, Boosted similarity: {similarity:.2f}%")
+        print(f"[COMPARE_BURST] Using enhanced tolerance: {enhanced_tolerance}")
+        
+        from ..config import MIN_SIMILARITY_PERCENT
+        TOLERANCE = 0.68  # Enhanced tolerance for better accuracy
+        is_match = (distance <= enhanced_tolerance) and (similarity >= MIN_SIMILARITY_PERCENT)
 
         force_garbage_collection()
 

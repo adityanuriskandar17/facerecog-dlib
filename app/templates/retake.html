@@ -22,7 +22,7 @@
             <div class="card">
                 <div class="label">Preview Foto Baru</div>
                 <div id="cameraContainer" style="display: none;">
-                    <video id="video" autoplay muted style="width: 100%; max-width: 300px; border-radius: 8px;"></video>
+                    <video id="video" autoplay muted style="width: 100%; max-width: 100%; height: auto; border-radius: 8px; min-height: 300px;"></video>
                     <canvas id="canvas" style="display: none;"></canvas>
                 </div>
                 <img id="newPreview" class="preview" src="" alt="Preview kosong" style="display: none;" />
@@ -41,7 +41,7 @@
                     <div class="similarity-meter-fill" id="similarityMeterFill"></div>
                 </div>
                 <div id="similarityLabel" class="similarity-label" style="display:none; text-align:center; margin-top:6px;"></div>
-                <div class="actions" id="registerActions" style="display:none;">
+                <div class="actions" id="registerActions" style="display:flex;">
                     <button id="burstRegisterBtn" type="button" class="btn secondary">Daftarkan Face Recognition (Burst 20)</button>
                     <button id="uploadGymBtn" type="button" class="btn secondary">Update Foto ke GymMaster</button>
                     <button id="uploadHorizonBtn" type="button" class="btn secondary">Update ke Horizon GCloud</button>
@@ -54,6 +54,7 @@
                 <li>Foto tampak depan menghadap kamera, pencahayaan jelas</li>
                 <li>1 orang saja, wajah tidak tertutup masker/kacamata hitam/topi</li>
                 <li>Latar jelas, bukan saat olahraga, tidak bersiluet</li>
+                <li>Ekspresi Harus Netral / Tidak Tersenyum / Tidak Mengangkat Bahu / Tidak Menggerakkan Kepala</li>
             </ul>
         </div>
     </div>
