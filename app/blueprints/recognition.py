@@ -390,9 +390,9 @@ def compare_photo():
         distances = safe_face_recognition("face_distance", [enc_gym], enc_cap)
         distance = float(distances[0]) if distances is not None and len(distances) else 1.0
 
-        # Enhanced similarity calculation with tuned thresholds
-        # Use optimized tolerance for better accuracy (0.68 as recommended)
-        enhanced_tolerance = 0.68  # Optimized tolerance for better accuracy
+        # Enhanced similarity calculation with balanced thresholds
+        # Use balanced tolerance for better detection (0.6 for balance)
+        enhanced_tolerance = 0.6  # Balanced tolerance for better detection
         raw_similarity = max(0.0, 1.0 - (distance / enhanced_tolerance)) * 100.0
         
         # Manipulate similarity score for better user experience
@@ -415,9 +415,9 @@ def compare_photo():
         print(f"[COMPARE_PHOTO] Distance: {distance:.4f}, Raw similarity: {raw_similarity:.2f}%, Boosted similarity: {similarity:.2f}%")
         print(f"[COMPARE_PHOTO] Using enhanced tolerance: {enhanced_tolerance}")
 
-        # Decision: use enhanced tolerance for better accuracy
+        # Decision: use balanced tolerance for better detection
         from ..config import MIN_SIMILARITY_PERCENT
-        TOLERANCE = 0.68  # Enhanced tolerance for better accuracy
+        TOLERANCE = 0.6  # Balanced tolerance for better detection
         is_match = (distance <= enhanced_tolerance) and (similarity >= MIN_SIMILARITY_PERCENT)
 
         # Cleanup
@@ -817,8 +817,8 @@ def compare_photo_burst():
         distances = safe_face_recognition("face_distance", [enc_gym], enc_avg)
         distance = float(distances[0]) if distances is not None and len(distances) else 1.0
         
-        # Enhanced similarity calculation with tuned thresholds
-        enhanced_tolerance = 0.68  # Optimized tolerance for better accuracy
+        # Enhanced similarity calculation with balanced thresholds
+        enhanced_tolerance = 0.6  # Balanced tolerance for better detection
         raw_similarity = max(0.0, 1.0 - (distance / enhanced_tolerance)) * 100.0
         
         # Manipulate similarity score for better user experience
@@ -842,7 +842,7 @@ def compare_photo_burst():
         print(f"[COMPARE_BURST] Using enhanced tolerance: {enhanced_tolerance}")
         
         from ..config import MIN_SIMILARITY_PERCENT
-        TOLERANCE = 0.68  # Enhanced tolerance for better accuracy
+        TOLERANCE = 0.6  # Balanced tolerance for better detection
         is_match = (distance <= enhanced_tolerance) and (similarity >= MIN_SIMILARITY_PERCENT)
 
         force_garbage_collection()
@@ -901,6 +901,153 @@ def compare_photo_burst():
         }
     except Exception as e:
         print(f"[COMPARE_BURST] Error: {e}")
+        return {"success": False, "error": str(e)}, 500
+
+@recognition_bp.route("/register-burst", methods=["POST"])
+def register_burst():
+    """
+    Register face recognition burst without similarity check
+    Only save encoding to database
+    """
+    try:
+        if not require_login():
+            return {"success": False, "error": "Unauthorized"}, 401
+
+        data = request.get_json(force=True)
+        images = data.get("images") or []
+        target_email = (data.get("email") or '').strip().lower()
+        
+        # If no email provided, try to get from session login
+        if not target_email:
+            token = session.get("gm_token", "")
+            if token:
+                prof = fetch_member_profile(token)
+                if not prof.get("error") and prof.get("result"):
+                    target_email = prof["result"].get("email", "").strip().lower()
+                    print(f"[REGISTER_BURST] Using email from session: {target_email}")
+        
+        if not images or not isinstance(images, list):
+            return {"success": False, "error": "images[] is required"}, 400
+
+        from ..services.face_recognition_service import (
+            safe_face_recognition, force_garbage_collection
+        )
+
+        # Build encodings for burst with enhanced preprocessing
+        enc_list = []
+        processed = 0
+        print("[REGISTER_BURST] Processing burst images for registration...")
+        for data_url in images:
+            try:
+                # Decode data URL -> RGB ndarray
+                match = re.match(r"^data:image/[^;]+;base64,(.*)$", data_url)
+                b64_data = match.group(1) if match else data_url
+                img_bytes = base64.b64decode(b64_data)
+                np_arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if bgr is None:
+                    print(f"[REGISTER_BURST] Invalid image data for sample {processed + 1}")
+                    continue
+                rgb_captured = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+                # Enhanced preprocessing for better accuracy
+                rgb_captured = enhance_image_for_recognition(rgb_captured)
+
+                # Find face boxes with enhanced detection
+                boxes_cap = safe_face_recognition("face_locations", rgb_captured, model="hog")
+                if not boxes_cap:
+                    print(f"[REGISTER_BURST] No face detected in sample {processed + 1}, trying CNN model...")
+                    boxes_cap = safe_face_recognition("face_locations", rgb_captured, model="cnn")
+                
+                if not boxes_cap:
+                    print(f"[REGISTER_BURST] No face detected in sample {processed + 1}, skipping...")
+                    continue
+
+                # Get face encodings
+                enc_cap_list = safe_face_recognition("face_encodings", rgb_captured, boxes_cap)
+                if not enc_cap_list:
+                    print(f"[REGISTER_BURST] No face encoding in sample {processed + 1}, skipping...")
+                    continue
+
+                # Normalize face encoding
+                enc_cap = normalize_face_encoding(enc_cap_list[0])
+                enc_list.append(enc_cap)
+                processed += 1
+                print(f"[REGISTER_BURST] Processed sample {processed}/{len(images)}")
+
+                # Cleanup
+                del bgr, np_arr, img_bytes, rgb_captured, boxes_cap, enc_cap_list
+                
+            except Exception as e:
+                print(f"[REGISTER_BURST] Error processing sample {processed + 1}: {e}")
+                continue
+
+        if not enc_list:
+            return {"success": False, "error": "No valid face encodings found in burst"}, 400
+
+        # Calculate median encoding (more robust than mean)
+        enc_avg = np.median(enc_list, axis=0)
+        print(f"[REGISTER_BURST] Created median encoding from {len(enc_list)} samples")
+
+        force_garbage_collection()
+
+        # Save encoding to database using email -> member.id mapping
+        saved = False
+        member_db_id = None
+        save_reason = None
+        
+        print(f"[REGISTER_BURST] Target email: '{target_email}'")
+        print(f"[REGISTER_BURST] Email provided: {bool(target_email)}")
+        
+        if target_email:
+            try:
+                from ..services.database_service import get_conn
+                conn = get_conn()
+                cur = conn.cursor()
+                
+                # Find member by email
+                cur.execute("SELECT id FROM member WHERE email = %s", (target_email,))
+                result = cur.fetchone()
+                
+                if result:
+                    member_db_id = result[0]
+                    print(f"[REGISTER_BURST] Found member ID: {member_db_id}")
+                    
+                    # Convert encoding to binary
+                    enc_binary = enc_avg.tobytes()
+                    
+                    # Save encoding to database
+                    cur.execute("""
+                        UPDATE member 
+                        SET enc = %s 
+                        WHERE id = %s
+                    """, (enc_binary, member_db_id))
+                    
+                    conn.commit()
+                    saved = True
+                    save_reason = f"Updated encoding for member {member_db_id}"
+                    print(f"[REGISTER_BURST] Successfully saved encoding for member {member_db_id}")
+                else:
+                    save_reason = f"Member not found for email: {target_email}"
+                    print(f"[REGISTER_BURST] Member not found for email: {target_email}")
+                
+                cur.close()
+                conn.close()
+                
+            except Exception as e:
+                save_reason = f"Database error: {str(e)}"
+                print(f"[REGISTER_BURST] Database error: {e}")
+
+        return {
+            "success": True,
+            "processed": processed,
+            "saved": saved,
+            "member_id": member_db_id,
+            "save_reason": save_reason,
+            "samples": len(enc_list)
+        }
+    except Exception as e:
+        print(f"[REGISTER_BURST] Error: {e}")
         return {"success": False, "error": str(e)}, 500
 
 @recognition_bp.route("/debug-burst-save", methods=["POST"])

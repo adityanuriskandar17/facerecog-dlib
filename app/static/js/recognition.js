@@ -170,31 +170,96 @@ document.addEventListener('DOMContentLoaded', function() {
     themeIcon.textContent = '☀️';
   }
   
-  const params = new URLSearchParams(window.location.search);
-  const paramDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
-  if (paramDoorId) {
+  const btn = document.getElementById('start-btn');
+  
+  // Cari doorId di query ?doorid=... atau hash #doorid=... (kalau SPA)
+  const search = new URLSearchParams(window.location.search);
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const paramDoorId = search.get('doorid') || search.get('door_id') || search.get('door') ||
+                      hash.get('doorid') || hash.get('door_id') || hash.get('door');
+  
+  console.log('[DOOR CHECK] URL Search:', window.location.search);
+  console.log('[DOOR CHECK] URL Hash:', window.location.hash);
+  console.log('[DOOR CHECK] Found door ID:', paramDoorId);
+  console.log('[DOOR CHECK] Button element:', btn);
+  console.log('[DOOR CHECK] Button disabled state:', btn ? btn.disabled : 'N/A');
+  console.log('[DOOR CHECK] Current URL:', window.location.href);
+  console.log('[DOOR CHECK] Has door ID?', !!(paramDoorId && paramDoorId.trim() !== ''));
+  
+  if (paramDoorId && paramDoorId.trim() !== '') {
     localStorage.setItem('doorId', paramDoorId);
     setDoorIdParam(paramDoorId);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '📹 Start Camera';
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+      btn.style.backgroundColor = '';
+      btn.style.borderColor = '';
+      btn.style.display = 'inline-block'; // Show button
+      console.log('[DOOR CHECK] ✅ Start button enabled - door ID found');
+    }
   } else {
-    // Clear any existing door ID from localStorage to ensure clean state
+    // Tidak ada doorId -> paksa disabled dan cegah klik
     localStorage.removeItem('doorId');
-    console.log('[DOOR CHECK] Cleared existing door ID from localStorage');
+    console.log('[DOOR CHECK] ❌ No door ID found - disabling button');
+    console.log('[DOOR CHECK] Button before hiding:', btn);
+    console.log('[DOOR CHECK] Button display before:', btn ? btn.style.display : 'N/A');
     
-    // Show warning if no door ID is provided and disable camera button
-    const status = document.getElementById('status');
-    const startButton = document.querySelector('button[onclick="startCamera()"]');
-    
-    if (status) {
-      status.textContent = '⚠️ Door ID belum diset. Tambahkan ?doorid=XXXX pada URL untuk memulai scan wajah';
-      status.className = 'status error';
+    if (btn) {
+      console.log('[DOOR CHECK] Hiding button - no door ID found');
+      btn.disabled = true;
+      btn.textContent = '🚫 Start Camera (Door ID Required)';
+      btn.style.opacity = '0.5';
+      btn.style.cursor = 'not-allowed';
+      btn.style.backgroundColor = '#dc3545';
+      btn.style.borderColor = '#dc3545';
+      btn.style.display = 'none'; // Hide button completely
+      console.log('[DOOR CHECK] Button display set to:', btn.style.display);
+      
+      // Prevent click with capture: true (tangkap sebelum handler lain)
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('[DOOR CHECK] ❌ Button click prevented - no door ID');
+        // No alert - just prevent click silently
+      }, { capture: true });
+      
+      console.log('[DOOR CHECK] ✅ Button hidden and click prevented');
+      console.log('[DOOR CHECK] Button after hiding:', btn);
+      console.log('[DOOR CHECK] Button display after:', btn.style.display);
+      console.log('[DOOR CHECK] Button disabled after:', btn.disabled);
     }
     
-    if (startButton) {
-      startButton.disabled = true;
-      startButton.textContent = '🚫 Start Camera (Door ID Required)';
-      startButton.style.opacity = '0.5';
-      startButton.style.cursor = 'not-allowed';
-    }
+    // No alert/notification - just hide button silently
+    console.log('[DOOR CHECK] ✅ Button hidden silently - no door ID');
+  }
+  
+  // Pasang handler start AFTER state di-set (hanya jika ada door ID)
+  if (btn && paramDoorId && paramDoorId.trim() !== '') {
+    // Remove any existing click handlers first to prevent duplicates
+    btn.removeEventListener('click', startCamera);
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('[BUTTON] Start camera button clicked');
+      
+      // Prevent multiple clicks while camera is starting
+      if (isCameraStarting) {
+        console.log('[BUTTON] ❌ Camera already starting, ignoring click');
+        return;
+      }
+      
+      if (stream) {
+        console.log('[BUTTON] ❌ Camera already running, ignoring click');
+        return;
+      }
+      
+      startCamera();
+    });
+    console.log('[DOOR CHECK] ✅ Start camera handler attached');
+  } else if (btn) {
+    console.log('[DOOR CHECK] ❌ No door ID - start camera handler not attached');
   }
 });
 
@@ -206,6 +271,7 @@ let ctx = canvas.getContext('2d');
 let status = document.getElementById('status');
 let isProcessing = false;
 let inFlight = false;
+let isCameraStarting = false;
 let lastFaces = [];
 let lastFacesTime = 0;
 const FACES_TTL_MS = 1200; // Reduced to 1200ms since we have local tracking
@@ -257,8 +323,8 @@ function associateLabels(detBoxes, knownFaces) {
 // Init FaceDetector jika tersedia
 function initLocalDetector() {
   // Check if door ID is available in URL before initializing local detector
-  const params = new URLSearchParams(window.location.search);
-  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  const search = new URLSearchParams(window.location.search);
+  const urlDoorId = search.get('doorid') || search.get('door_id') || search.get('door');
   
   if (!urlDoorId || urlDoorId.trim() === '') {
     console.log('[LOCAL] Skipping local detector initialization - no door ID in URL');
@@ -280,12 +346,40 @@ function initLocalDetector() {
 
 function localDetectLoop() {
   // Check if door ID is available in URL before proceeding with detection
-  const params = new URLSearchParams(window.location.search);
-  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  const search = new URLSearchParams(window.location.search);
+  const urlDoorId = search.get('doorid') || search.get('door_id') || search.get('door');
   
   if (!urlDoorId || urlDoorId.trim() === '') {
     // No door ID in URL, stop local detection
     console.log('[LOCAL] Stopping local detection - no door ID in URL');
+    
+    // Show SweetAlert warning if no door ID
+    if (typeof Swal !== 'undefined') ({
+      // Swal.fire({
+        title: '⚠️ Door ID Belum Diset!',
+        html: `
+          <div style="text-align: left;">
+            <p><strong>Parameter doorid belum diset pada URL.</strong></p>
+            <p>Tambahkan parameter <code>?doorid=XXXX</code> pada URL untuk memulai scan wajah.</p>
+            <br>
+            <p><strong>Contoh URL yang benar:</strong></p>
+            <p><code>http://localhost:5000?doorid=12345</code></p>
+          </div>
+        `,
+        icon: 'warning',
+        confirmButtonText: 'OK',
+        confirmButtonColor: '#d33',
+        allowOutsideClick: false,
+        allowEscapeKey: false
+      });
+    }
+    
+    // Stop camera and processing if running
+    if (stream) {
+      stopCamera();
+    }
+    isProcessing = false;
+    
     return;
   }
   
@@ -331,7 +425,7 @@ function localDetectLoop() {
     })
     .catch(() => { /* noop */ })
     .finally(() => setTimeout(localDetectLoop, LOCAL_DET_INTERVAL));
-}
+
 
 function updateStatus(message, type = 'info') {
   status.textContent = message;
@@ -339,30 +433,71 @@ function updateStatus(message, type = 'info') {
 }
 
 async function startCamera() {
-  // Double check door ID is set - both from URL params and localStorage
-  const params = new URLSearchParams(window.location.search);
-  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
-  const savedDoorId = localStorage.getItem('doorId');
+  console.log('[DOOR CHECK] ===== START CAMERA FUNCTION CALLED =====');
+  
+  // PREVENT MULTIPLE CAMERA STARTS
+  if (isCameraStarting) {
+    console.log('[CAMERA] ❌ Camera already starting, preventing duplicate start');
+    return false;
+  }
+  
+  if (stream) {
+    console.log('[CAMERA] ❌ Camera already running, preventing duplicate start');
+    return false;
+  }
+  
+  // IMMEDIATE CHECK - HARUS ada door ID di URL (query + hash)
+  const search = new URLSearchParams(window.location.search);
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const urlDoorId = search.get('doorid') || search.get('door_id') || search.get('door') ||
+                    hash.get('doorid') || hash.get('door_id') || hash.get('door');
   
   console.log('[DOOR CHECK] URL Door ID:', urlDoorId);
-  console.log('[DOOR CHECK] Saved Door ID:', savedDoorId);
   console.log('[DOOR CHECK] Current URL:', window.location.href);
+  console.log('[DOOR CHECK] URL Search:', window.location.search);
+  console.log('[DOOR CHECK] URL Hash:', window.location.hash);
   
   // HARUS ada door ID di URL - tidak boleh hanya dari localStorage
   if (!urlDoorId || urlDoorId.trim() === '') {
-    updateStatus('⚠️ Door ID belum diset. Tambahkan ?doorid=XXXX pada URL untuk memulai scan wajah', 'error');
-    alert('⚠️ PERINGATAN: Door ID belum diset!\n\nTambahkan parameter ?doorid=XXXX pada URL untuk memulai scan wajah.\n\nContoh: http://localhost:5000?doorid=12345');
+    console.log('[DOOR CHECK] ❌ NO DOOR ID FOUND - PREVENTING CAMERA START');
+    console.log('[DOOR CHECK] URL Search Params:', window.location.search);
+    console.log('[DOOR CHECK] All URL Params:', Object.fromEntries(search.entries()));
     
-    // Disable the start camera button
-    const startButton = document.querySelector('button[onclick="startCamera()"]');
+    // Update status without alert/notification
+    updateStatus('⚠️ Door ID belum diset. Tambahkan ?doorid=XXXX pada URL untuk memulai scan wajah', 'error');
+    
+    // Hide the start camera button IMMEDIATELY
+    const startButton = document.getElementById('start-btn');
+    console.log('[DOOR CHECK] Start button element:', startButton);
+    
     if (startButton) {
+      console.log('[DOOR CHECK] Hiding start button...');
       startButton.disabled = true;
       startButton.textContent = '🚫 Start Camera (Door ID Required)';
       startButton.style.opacity = '0.5';
       startButton.style.cursor = 'not-allowed';
+      startButton.style.backgroundColor = '#dc3545';
+      startButton.style.borderColor = '#dc3545';
+      startButton.style.display = 'none'; // Hide button completely
+      
+      // Remove any existing event listeners to prevent future clicks
+      startButton.removeEventListener('click', startCamera);
+      console.log('[DOOR CHECK] ✅ Button hidden and event listeners removed');
+    } else {
+      console.log('[DOOR CHECK] ❌ Start button not found!');
     }
-    return;
+    
+    // STOP HERE - DO NOT PROCEED
+    console.log('[DOOR CHECK] ❌ RETURNING FALSE - CAMERA START PREVENTED');
+    return false;
   }
+  
+  // Set flag to prevent multiple starts
+  isCameraStarting = true;
+  
+  // If we reach here, door ID exists - proceed with camera start
+  const savedDoorId = localStorage.getItem('doorId');
+  console.log('[DOOR CHECK] Saved Door ID:', savedDoorId);
   
   // If we have URL door ID but not saved, save it
   if (urlDoorId && !savedDoorId) {
@@ -371,26 +506,31 @@ async function startCamera() {
   }
   
   // Re-enable start camera button if door ID is available
-  const startButton = document.querySelector('button[onclick="startCamera()"]');
+  const startButton = document.getElementById('start-btn');
   if (startButton && startButton.disabled) {
     startButton.disabled = false;
     startButton.textContent = '📹 Start Camera';
     startButton.style.opacity = '1';
     startButton.style.cursor = 'pointer';
+    startButton.style.backgroundColor = '';
+    startButton.style.borderColor = '';
+    startButton.style.display = 'inline-block'; // Show button
   }
   
   // FINAL CHECK - HARUS ada door ID di URL, tidak boleh bypass
-  const currentUrlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  const currentUrlDoorId = search.get('doorid') || search.get('door_id') || search.get('door');
   
   console.log('[FINAL CHECK] Current URL Door ID:', currentUrlDoorId);
   console.log('[FINAL CHECK] Full URL:', window.location.href);
+  console.log('[FINAL CHECK] Search params:', search.toString());
+  console.log('[FINAL CHECK] All search entries:', Object.fromEntries(search.entries()));
   
   if (!currentUrlDoorId || currentUrlDoorId.trim() === '') {
     console.log('[CAMERA] FINAL CHECK FAILED - no valid door ID in URL');
     updateStatus('⚠️ Door ID belum diset. Tambahkan ?doorid=XXXX pada URL untuk memulai scan wajah', 'error');
     
     // Disable the start camera button
-    const startButton = document.querySelector('button[onclick="startCamera()"]');
+    const startButton = document.getElementById('start-btn');
     if (startButton) {
       startButton.disabled = true;
       startButton.textContent = '🚫 Start Camera (Door ID Required)';
@@ -434,12 +574,16 @@ async function startCamera() {
           startProcessing();
           // Initialize local face detector after video is ready
           initLocalDetector();
+          // Reset camera starting flag
+          isCameraStarting = false;
         }).catch(err => {
           console.error('[CAMERA] Video play failed:', err);
           // Still start processing even if play fails
           startProcessing();
           // Initialize local face detector even if play fails
           initLocalDetector();
+          // Reset camera starting flag
+          isCameraStarting = false;
         });
       }, 100); // Small delay to ensure video is ready
     };
@@ -447,6 +591,8 @@ async function startCamera() {
     video.onerror = function(e) {
       console.error('[CAMERA] Video error:', e);
       updateStatus('Video error occurred', 'error');
+      // Reset camera starting flag on error
+      isCameraStarting = false;
     };
     
     video.oncanplay = function() {
@@ -462,6 +608,8 @@ async function startCamera() {
     };
   } catch (error) {
     updateStatus('Camera access denied or not available: ' + error.message, 'error');
+    // Reset camera starting flag on error
+    isCameraStarting = false;
   }
 }
 
@@ -474,17 +622,46 @@ function stopCamera() {
     faceDetector = null;
     localBoxes = [];
     lastFaces = [];
+    // Reset camera starting flag
+    isCameraStarting = false;
     updateStatus('Camera stopped', 'info');
   }
 }
 
 function startProcessing() {
   // Check if door ID is available in URL before starting processing
-  const params = new URLSearchParams(window.location.search);
-  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  const search = new URLSearchParams(window.location.search);
+  const urlDoorId = search.get('doorid') || search.get('door_id') || search.get('door');
   
-  if (!urlDoorId) {
+  if (!urlDoorId || urlDoorId.trim() === '') {
     console.log('[PROCESSING] Skipping processing start - no door ID in URL');
+    
+    // Show SweetAlert warning if no door ID
+    if (typeof Swal !== 'undefined') ({
+      // Swal.fire({
+        title: '⚠️ Door ID Belum Diset!',
+        html: `
+          <div style="text-align: left;">
+            <p><strong>Parameter doorid belum diset pada URL.</strong></p>
+            <p>Tambahkan parameter <code>?doorid=XXXX</code> pada URL untuk memulai scan wajah.</p>
+            <br>
+            <p><strong>Contoh URL yang benar:</strong></p>
+            <p><code>http://localhost:5000?doorid=12345</code></p>
+          </div>
+        `,
+        icon: 'warning',
+        confirmButtonText: 'OK',
+        confirmButtonColor: '#d33',
+        allowOutsideClick: false,
+        allowEscapeKey: false
+      });
+    }
+    
+    // Stop camera if running
+    if (stream) {
+      stopCamera();
+    }
+    
     return;
   }
   
@@ -492,7 +669,7 @@ function startProcessing() {
   isProcessing = true;
   requestAnimationFrame(drawDisplay);
   processFrame();
-}
+
 
 let lastProcessTime = 0;
 let PROCESS_INTERVAL = 50; // Increased from 30ms to 50ms for better stability
@@ -504,12 +681,40 @@ let performanceMetrics = {
 
 function processFrame() {
   // Check if door ID is available in URL before proceeding with server recognition
-  const params = new URLSearchParams(window.location.search);
-  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  const search = new URLSearchParams(window.location.search);
+  const urlDoorId = search.get('doorid') || search.get('door_id') || search.get('door');
   
   if (!urlDoorId || urlDoorId.trim() === '') {
     // No door ID in URL, stop server recognition
     console.log('[SERVER] Stopping server recognition - no door ID in URL');
+    
+    // Show SweetAlert warning if no door ID
+    if (typeof Swal !== 'undefined') ({
+      // Swal.fire({
+        title: '⚠️ Door ID Belum Diset!',
+        html: `
+          <div style="text-align: left;">
+            <p><strong>Parameter doorid belum diset pada URL.</strong></p>
+            <p>Tambahkan parameter <code>?doorid=XXXX</code> pada URL untuk memulai scan wajah.</p>
+            <br>
+            <p><strong>Contoh URL yang benar:</strong></p>
+            <p><code>http://localhost:5000?doorid=12345</code></p>
+          </div>
+        `,
+        icon: 'warning',
+        confirmButtonText: 'OK',
+        confirmButtonColor: '#d33',
+        allowOutsideClick: false,
+        allowEscapeKey: false
+      });
+    }
+    
+    // Stop camera and processing if running
+    if (stream) {
+      stopCamera();
+    }
+    isProcessing = false;
+    
     if (isProcessing) {
       setTimeout(processFrame, 200);
     }
@@ -591,7 +796,7 @@ function processFrame() {
   if (isProcessing) {
     setTimeout(processFrame, 100); // Optimized for stable bounding box tracking
   }
-}
+
 
 function displayProcessedFrame(frameBase64) {
   // Display OpenCV-processed frame with bounding boxes already drawn
@@ -878,11 +1083,40 @@ function drawDisplay() {
   if (!isProcessing) return;
   
   // Check if door ID is available in URL before displaying faces
-  const params = new URLSearchParams(window.location.search);
-  const urlDoorId = params.get('doorid') || params.get('door_id') || params.get('door');
+  const search = new URLSearchParams(window.location.search);
+  const urlDoorId = search.get('doorid') || search.get('door_id') || search.get('door');
   
-  if (!urlDoorId) {
+  if (!urlDoorId || urlDoorId.trim() === '') {
     // No door ID in URL, don't display faces
+    console.log('[DISPLAY] No door ID in URL, stopping display');
+    
+    // Show SweetAlert warning if no door ID
+    if (typeof Swal !== 'undefined') ({
+      // Swal.fire({
+        title: '⚠️ Door ID Belum Diset!',
+        html: `
+          <div style="text-align: left;">
+            <p><strong>Parameter doorid belum diset pada URL.</strong></p>
+            <p>Tambahkan parameter <code>?doorid=XXXX</code> pada URL untuk memulai scan wajah.</p>
+            <br>
+            <p><strong>Contoh URL yang benar:</strong></p>
+            <p><code>http://localhost:5000?doorid=12345</code></p>
+          </div>
+        `,
+        icon: 'warning',
+        confirmButtonText: 'OK',
+        confirmButtonColor: '#d33',
+        allowOutsideClick: false,
+        allowEscapeKey: false
+      });
+    }
+    
+    // Stop camera and processing if running
+    if (stream) {
+      stopCamera();
+    }
+    isProcessing = false;
+    
     requestAnimationFrame(drawDisplay);
     return;
   }
@@ -1039,7 +1273,7 @@ function drawDisplay() {
   }
   
   requestAnimationFrame(drawDisplay);
-}
+
 
 // Cleanup on page unload
 window.addEventListener('beforeunload', stopCamera);

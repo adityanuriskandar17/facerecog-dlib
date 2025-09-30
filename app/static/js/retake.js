@@ -426,13 +426,13 @@ document.addEventListener('DOMContentLoaded', function() {
             // Hide burst start button
             if (burstStartBtn) burstStartBtn.style.display = 'none';
             
-            // Process burst images
+            // Process burst images for registration (no similarity check)
             try {
                 // Get email from login session
                 const email = (window.CURRENT_EMAIL || '').trim();
-                console.log('Sending burst request with email:', email || 'auto-detect from session');
+                console.log('Sending burst registration request with email:', email || 'auto-detect from session');
                 
-                const res = await fetch('/compare-photo-burst', {
+                const res = await fetch('/register-burst', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
@@ -441,51 +441,53 @@ document.addEventListener('DOMContentLoaded', function() {
                 const json = await parseResponse(res);
                 if (loader) loader.style.display = 'none';
                 
-                // Process results
-                const pct = json.similarity ?? 0;
-                const dist = json.distance ?? 1.0;
-                const match = !!json.match;
-                let category = 'Kurang mirip';
-                let catClass = 'label-low';
-                if (pct >= 75) { category = 'Sangat mirip'; catClass = 'label-high'; }
-                else if (pct >= 40) { category = 'Cukup mirip'; catClass = 'label-mid'; }
+                // Process registration results (no similarity check)
+                const processed = json.processed ?? 0;
+                const saved = !!json.saved;
+                const memberId = json.member_id;
+                const saveReason = json.save_reason;
+                const samples = json.samples ?? 0;
+                // Show registration results (no similarity check)
+                if (resultBar) {
+                    resultBar.textContent = `Burst registration: ${processed} samples processed`;
+                    resultBar.className = saved ? 'similarity-result match' : 'similarity-result no-match';
+                }
                 
-                // Detect different person (low similarity) for burst
-                if (pct < 40) {
+                if (label) {
+                    label.style.display = 'block';
+                    label.className = saved ? 'similarity-label label-high' : 'similarity-label label-low';
+                    label.textContent = saved ? 
+                        `✅ Face encoding berhasil disimpan (${samples} samples)` : 
+                        `❌ Face encoding gagal disimpan: ${saveReason}`;
+                }
+                
+                if (meter) meter.style.display = 'none'; // No similarity meter for registration
+                
+                if (burstProgress) {
+                    if (saved) {
+                        burstProgress.textContent = `✅ Face encoding berhasil disimpan untuk member ID: ${memberId}`;
+                    } else {
+                        burstProgress.textContent = `❌ Face encoding gagal disimpan: ${saveReason}`;
+                    }
+                }
+                
+                // Show success message
+                if (saved) {
                     Swal.fire({
-                        title: 'Orang Berbeda',
-                        text: 'Kemiripan: ' + pct + '% - Ini adalah orang yang berbeda',
-                        icon: 'warning',
+                        title: 'Registration Berhasil!',
+                        text: `Face encoding berhasil disimpan dengan ${samples} samples untuk member ID: ${memberId}`,
+                        icon: 'success',
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#28a745'
+                    });
+                } else {
+                    Swal.fire({
+                        title: 'Registration Gagal',
+                        text: `Face encoding gagal disimpan: ${saveReason}`,
+                        icon: 'error',
                         confirmButtonText: 'OK',
                         confirmButtonColor: '#d33'
                     });
-                    
-                    // Reset the interface
-                    if (resultBar) {
-                        resultBar.textContent = 'Orang berbeda terdeteksi! Ambil foto ulang.';
-                        resultBar.className = 'similarity-result no-match';
-                    }
-                    if (meter) meter.style.display = 'none';
-                    if (label) label.style.display = 'none';
-                    if (burstStartBtn) burstStartBtn.style.display = 'inline-block';
-                    
-                    return;
-                }
-                
-                if (resultBar) resultBar.textContent = `Kemiripan: ${pct}% (jarak: ${dist})`;
-                if (meterFill) meterFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-                if (label) {
-                    label.style.display = 'block';
-                    label.className = `similarity-label ${catClass}`;
-                    const savedNote = json.saved ? ' • Encoding tersimpan' : '';
-                    label.textContent = category + (match ? ' • Lolos ambang' : ' • Di bawah ambang') + savedNote;
-                }
-                if (json.saved) {
-                    if (burstProgress) burstProgress.textContent = 'Encoding disimpan ke database.';
-                } else if (json.save_reason) {
-                    if (burstProgress) burstProgress.textContent = 'Encoding tidak disimpan: ' + json.save_reason;
-                } else {
-                    if (burstProgress) burstProgress.textContent = '';
                 }
                 
                 // Keep actions visible (don't hide after burst register)

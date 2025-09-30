@@ -25,12 +25,12 @@ GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME', 'ftlhorizon')
 GCS_BASE_URL_ASSET = os.getenv('GCS_BASE_URL_ASSET', 'https://cdn.ftlhorizon.com/')
 
 # Flask Configuration
-FLASK_SECRET_KEY = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-here')
+FLASK_SECRET_KEY = os.getenv('FLASK_SECRET_KEY', '')
 
 # Face Recognition Configuration
-TOLERANCE = float(os.getenv('TOLERANCE', '0.6'))  # Standard tolerance for face recognition
+TOLERANCE = float(os.getenv('TOLERANCE', '0.6'))  # Balanced tolerance for face recognition
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))
-MIN_SIMILARITY_PERCENT = float(os.getenv('MIN_SIMILARITY_PERCENT', '50'))  
+MIN_SIMILARITY_PERCENT = float(os.getenv('MIN_SIMILARITY_PERCENT', '40'))  # Lower threshold for better detection  
 
 # Redis Configuration
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
