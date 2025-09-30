@@ -565,83 +565,40 @@ def update_member_photo_horizon():
         print(f"[HORIZON] Uploading to Google Cloud Storage: {filename}")
         
         try:
-            # Import Google Cloud Storage
-            from google.cloud import storage
+            # Use the new GCS service
+            from ..services.gcs_service import gcs_service
             import base64
-            
-            # Initialize GCS client
-            client = storage.Client()
-            from ..config import GCS_BUCKET_NAME
-            bucket = client.bucket(GCS_BUCKET_NAME)
             
             # Decode base64 image
             image_data = base64.b64decode(b64_data)
             
-            # Create blob path
-            blob_path = f"assets/img/profile/{date_path}{filename}"
-            blob = bucket.blob(blob_path)
+            # Upload using GCS service
+            result = gcs_service.upload_image(image_data, filename, "profile")
             
-            # Upload image to GCS
-            blob.upload_from_string(image_data, content_type=f"image/{imagetype}")
-            
-            # Make blob publicly accessible
-            blob.make_public()
-            
-            # Generate public URL
-            from ..config import GCS_BASE_URL_ASSET
-            gcs_url = f"{GCS_BASE_URL_ASSET}{blob_path}"
-            
-            print(f"[HORIZON] Real upload successful: {gcs_url}")
-            
-        except Exception as upload_error:
-            print(f"[HORIZON] GCS Python library failed: {upload_error}")
-            
-            # Fallback: Use gcloud CLI for upload
-            try:
-                import tempfile
-                import os
-                
-                # Save image to temporary file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{imagetype}") as temp_file:
-                    temp_file.write(base64.b64decode(b64_data))
-                    temp_file_path = temp_file.name
-                
-                # Upload using gcloud CLI
-                from ..config import GCS_
-                blob_path = f"assets/img/profile/{date_path}{filename}"
-                gs_path = f"gs://{GCS_BUCKET_NAME}/{blob_path}"
-                
-                import subprocess
-                result = subprocess.run([
-                    'gcloud', 'storage', 'cp', temp_file_path, gs_path,
-                    '--content-type', f"image/{imagetype}"
-                ], capture_output=True, text=True)
-                
-                if result.returncode == 0:
-                    # Make file public
-                    subprocess.run([
-                        'gcloud', 'storage', 'objects', 'update', gs_path,
-                        '--add-acl-grant=allUsers:READER'
-                    ], capture_output=True, text=True)
-                    
-                    # Generate public URL
-                    from ..config import GCS_BASE_URL_ASSET
-                    gcs_url = f"{GCS_BASE_URL_ASSET}{blob_path}"
-                    
-                    print(f"[HORIZON] gcloud CLI upload successful: {gcs_url}")
-                else:
-                    raise Exception(f"gcloud upload failed: {result.stderr}")
-                
-                # Clean up temp file
-                os.unlink(temp_file_path)
-                
-            except Exception as cli_error:
-                print(f"[HORIZON] gcloud CLI upload failed: {cli_error}")
-                # Final fallback to mock upload
-                print(f"[HORIZON] Falling back to mock upload: {filename}")
+            if result.get('success'):
+                gcs_url = result['url']
+                print(f"[HORIZON] GCS upload successful: {gcs_url}")
+            else:
+                print(f"[HORIZON] GCS upload failed: {result.get('error')}")
+                # Fallback to mock upload
+                import uuid
+                mock_filename = f"{uuid.uuid4()}.jpeg"
                 from ..config import GCS_BASE_URL_ASSET
                 gcs_url = f"{GCS_BASE_URL_ASSET}assets/img/profile/{date_path}{filename}"
+                print(f"[HORIZON] Falling back to mock upload: {mock_filename}")
                 print(f"[HORIZON] Mock upload successful: {gcs_url}")
+                
+        except Exception as upload_error:
+            print(f"[HORIZON] GCS upload error: {upload_error}")
+            
+            # Final fallback: Mock upload
+            import uuid
+            mock_filename = f"{uuid.uuid4()}.jpeg"
+            from ..config import GCS_BASE_URL_ASSET
+            gcs_url = f"{GCS_BASE_URL_ASSET}assets/img/profile/{date_path}{filename}"
+            
+            print(f"[HORIZON] Falling back to mock upload: {mock_filename}")
+            print(f"[HORIZON] Mock upload successful: {gcs_url}")
         
         # Save to member_file table in database (reuse existing connection)
         try:

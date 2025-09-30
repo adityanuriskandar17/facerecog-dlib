@@ -23,6 +23,9 @@ CHECKIN_ENABLED = os.getenv('CHECKIN_ENABLED', 'True').lower() == 'true'
 HORIZON_FASTAPI_URL = os.getenv('HORIZON_FASTAPI_URL', 'https://ftlhorizon.com')
 GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME', 'ftlhorizon')
 GCS_BASE_URL_ASSET = os.getenv('GCS_BASE_URL_ASSET', 'https://cdn.ftlhorizon.com/')
+GCS_UPLOAD_ENABLED = os.getenv('GCS_UPLOAD_ENABLED', 'true').lower() == 'true'
+GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', '')
+GCS_CREDENTIALS_PATH = os.getenv('GCS_CREDENTIALS_PATH', '')
 
 # Flask Configuration
 FLASK_SECRET_KEY = os.getenv('FLASK_SECRET_KEY', '')

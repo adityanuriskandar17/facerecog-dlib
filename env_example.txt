@@ -19,6 +19,9 @@ GYM_DOOR_ID=19456
 HORIZON_FASTAPI_URL=https://ftlhorizon.com
 GCS_BUCKET_NAME=ftlhorizon
 GCS_BASE_URL_ASSET=https://cdn.ftlhorizon.com/
+GCS_UPLOAD_ENABLED=true
+GCP_PROJECT_ID=your-project-id
+GCS_CREDENTIALS_PATH=/path/to/service-account.json
 
 # Batch Configuration
 ENC_BATCH_SIZE=10
